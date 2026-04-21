@@ -624,9 +624,17 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
         }
 
         var text = output.ToString(0, result);
-        if (text.Length == 0 || text.Any(char.IsControl))
+        if (text.Length == 0)
         {
             return null;
+        }
+
+        for (var i = 0; i < text.Length; i++)
+        {
+            if (char.IsControl(text[i]))
+            {
+                return null;
+            }
         }
 
         return text;
