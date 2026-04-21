@@ -392,8 +392,17 @@ public static class AnsiTokenizer
                 break;
 
             case 'u':
-                // ANSI restore cursor
-                tokens.Add(RestoreCursorToken.Ansi);
+                // CSI u is ambiguous:
+                // - ESC [ u          => ANSI restore cursor
+                // - ESC [ code;mod u => fixterm/kitty keyboard protocol
+                if (string.IsNullOrEmpty(parameters))
+                {
+                    tokens.Add(RestoreCursorToken.Ansi);
+                }
+                else
+                {
+                    ParseSpecialKey(parameters, tokens);
+                }
                 break;
 
             case 'A':

@@ -882,6 +882,16 @@ public sealed class Hex1bTerminal : IDisposable, IAsyncDisposable
     
     private static Hex1bKeyEvent? SpecialKeyTokenToKeyEvent(SpecialKeyToken token)
     {
+        // Decode modifiers from the modifier code
+        var modifiers = Hex1bModifiers.None;
+        if (token.Modifiers >= 2)
+        {
+            var modifierBits = token.Modifiers - 1;
+            if ((modifierBits & 1) != 0) modifiers |= Hex1bModifiers.Shift;
+            if ((modifierBits & 2) != 0) modifiers |= Hex1bModifiers.Alt;
+            if ((modifierBits & 4) != 0) modifiers |= Hex1bModifiers.Control;
+        }
+
         var key = token.KeyCode switch
         {
             1 => Hex1bKey.Home,
@@ -907,20 +917,13 @@ public sealed class Hex1bTerminal : IDisposable, IAsyncDisposable
             _ => Hex1bKey.None
         };
         
-        if (key == Hex1bKey.None)
-            return null;
-        
-        // Decode modifiers from the modifier code
-        var modifiers = Hex1bModifiers.None;
-        if (token.Modifiers >= 2)
+        if (key != Hex1bKey.None)
         {
-            var modifierBits = token.Modifiers - 1;
-            if ((modifierBits & 1) != 0) modifiers |= Hex1bModifiers.Shift;
-            if ((modifierBits & 2) != 0) modifiers |= Hex1bModifiers.Alt;
-            if ((modifierBits & 4) != 0) modifiers |= Hex1bModifiers.Control;
+            return new Hex1bKeyEvent(key, '\0', modifiers);
         }
-        
-        return new Hex1bKeyEvent(key, '\0', modifiers);
+
+        // Fallback: treat unknown special-key code as fixterm/kitty Unicode codepoint.
+        return ParseFixtermKeyEvent(token.KeyCode, modifiers);
     }
     
     private static Hex1bKeyEvent? ArrowKeyTokenToKeyEvent(ArrowKeyToken token)
