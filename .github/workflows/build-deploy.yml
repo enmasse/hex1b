@@ -547,13 +547,13 @@ jobs:
               <!--To inherit the global NuGet package sources remove the <clear/> line below -->
               <clear />
               <add key="nuget" value="https://api.nuget.org/v3/index.json" />
-              <add key="github-mitchdenny" value="https://nuget.pkg.github.com/mitchdenny/index.json" />
+              <add key="github-${{ github.repository_owner }}" value="https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" />
             </packageSources>
             <packageSourceMapping>
               <packageSource key="nuget">
                 <package pattern="*" />
               </packageSource>
-              <packageSource key="github-mitchdenny">
+              <packageSource key="github-${{ github.repository_owner }}">
                 <package pattern="Hex1b*" />
               </packageSource>
             </packageSourceMapping>
@@ -572,7 +572,7 @@ jobs:
           gh auth refresh -s read:packages
 
           # Configure NuGet to use GitHub auth
-          dotnet nuget update source github-mitchdenny \\
+          dotnet nuget update source github-${{ github.repository_owner }} \\
             --username YOUR_GITHUB_USERNAME \\
             --password \$(gh auth token) \\
             --store-password-in-clear-text
