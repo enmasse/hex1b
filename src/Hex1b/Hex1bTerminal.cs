@@ -5673,8 +5673,8 @@ public sealed class Hex1bTerminal : IDisposable, IAsyncDisposable
             9 => new Hex1bKeyEvent(Hex1bKey.Tab, '\t', modifiers),
             13 => new Hex1bKeyEvent(Hex1bKey.Enter, '\r', modifiers),
             27 => new Hex1bKeyEvent(Hex1bKey.Escape, '\x1b', modifiers),
-            32 => new Hex1bKeyEvent(Hex1bKey.Spacebar, " ", modifiers),
-            127 => new Hex1bKeyEvent(Hex1bKey.Backspace, '\x7f', modifiers),
+            ' ' => new Hex1bKeyEvent(Hex1bKey.Spacebar, " ", modifiers),
+            '\x7f' => new Hex1bKeyEvent(Hex1bKey.Backspace, '\x7f', modifiers),
             >= 'a' and <= 'z' => new Hex1bKeyEvent(
                 KeyMapper.ToHex1bKey((ConsoleKey)((int)ConsoleKey.A + (codepoint - 'a'))), text, modifiers),
             >= 'A' and <= 'Z' => new Hex1bKeyEvent(
