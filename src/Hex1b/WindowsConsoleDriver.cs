@@ -618,6 +618,17 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
 
         var output = new StringBuilder(8);
         var result = ToUnicodeEx(vk, scanCode, keyState, output, output.Capacity, 0, hkl);
+        if (result == -1)
+        {
+            // This VK was a dead key (e.g. ´, `, ^, ¨).  ToUnicodeEx has just placed it
+            // into its internal accumulator.  If we leave it there, the next call will
+            // compose it with whatever key happens to be processed next, producing a
+            // wrong character.  Drain the accumulator by calling ToUnicodeEx again with
+            // VK_SPACE so the dead key is consumed harmlessly.
+            var drain = new StringBuilder(8);
+            ToUnicodeEx(VK_SPACE, 0x39, keyState, drain, drain.Capacity, 0, hkl);
+            return null;
+        }
         if (result <= 0)
         {
             return null;
