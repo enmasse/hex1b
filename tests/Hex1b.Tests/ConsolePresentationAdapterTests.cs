@@ -40,6 +40,7 @@ public class ConsolePresentationAdapterTests
 
     [Theory]
     [InlineData("\x1b[65;30;97;1;0;1_", "a")]
+    [InlineData("\x1b[219;26;229;1;0;1_", "å")]
     [InlineData("\x1b[13;28;13;1;0;1_", "\r")]
     [InlineData("\x1b[65;30;97;1;0;3_", "aaa")]
     public void WindowsConsoleDriver_TryTranslateWin32InputSequence_DecodesForwardedKeyboardInput(
