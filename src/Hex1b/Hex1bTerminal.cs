@@ -882,6 +882,16 @@ public sealed class Hex1bTerminal : IDisposable, IAsyncDisposable
     
     private static Hex1bKeyEvent? SpecialKeyTokenToKeyEvent(SpecialKeyToken token)
     {
+        // Decode modifiers from the modifier code
+        var modifiers = Hex1bModifiers.None;
+        if (token.Modifiers >= 2)
+        {
+            var modifierBits = token.Modifiers - 1;
+            if ((modifierBits & 1) != 0) modifiers |= Hex1bModifiers.Shift;
+            if ((modifierBits & 2) != 0) modifiers |= Hex1bModifiers.Alt;
+            if ((modifierBits & 4) != 0) modifiers |= Hex1bModifiers.Control;
+        }
+
         var key = token.KeyCode switch
         {
             1 => Hex1bKey.Home,
@@ -907,20 +917,13 @@ public sealed class Hex1bTerminal : IDisposable, IAsyncDisposable
             _ => Hex1bKey.None
         };
         
-        if (key == Hex1bKey.None)
-            return null;
-        
-        // Decode modifiers from the modifier code
-        var modifiers = Hex1bModifiers.None;
-        if (token.Modifiers >= 2)
+        if (key != Hex1bKey.None)
         {
-            var modifierBits = token.Modifiers - 1;
-            if ((modifierBits & 1) != 0) modifiers |= Hex1bModifiers.Shift;
-            if ((modifierBits & 2) != 0) modifiers |= Hex1bModifiers.Alt;
-            if ((modifierBits & 4) != 0) modifiers |= Hex1bModifiers.Control;
+            return new Hex1bKeyEvent(key, '\0', modifiers);
         }
-        
-        return new Hex1bKeyEvent(key, '\0', modifiers);
+
+        // Fallback: treat unknown special-key code as fixterm/kitty Unicode codepoint.
+        return ParseFixtermKeyEvent(token.KeyCode, modifiers);
     }
     
     private static Hex1bKeyEvent? ArrowKeyTokenToKeyEvent(ArrowKeyToken token)
@@ -5612,6 +5615,11 @@ public sealed class Hex1bTerminal : IDisposable, IAsyncDisposable
             if ((modifierBits & 4) != 0) modifiers |= Hex1bModifiers.Control;
         }
 
+        if (finalChar == 'u')
+        {
+            return (ParseFixtermKeyEvent(param1, modifiers), i - start);
+        }
+
         var key = finalChar switch
         {
             'A' => Hex1bKey.UpArrow,
@@ -5622,7 +5630,6 @@ public sealed class Hex1bTerminal : IDisposable, IAsyncDisposable
             'F' => Hex1bKey.End,
             'Z' => Hex1bKey.Tab,
             '~' => ParseTildeSequence(param1),
-            'u' => ParseFixtermKeycode(param1), // CSI u (fixterm/Kitty protocol)
             _ => Hex1bKey.None
         };
 
@@ -5650,22 +5657,32 @@ public sealed class Hex1bTerminal : IDisposable, IAsyncDisposable
     }
 
     /// <summary>
-    /// Maps a CSI u (fixterm/Kitty protocol) Unicode codepoint to a Hex1bKey.
+    /// Maps a CSI u (fixterm/Kitty protocol) Unicode codepoint to a key event.
     /// Format: ESC [ codepoint ; modifiers u
     /// </summary>
-    private static Hex1bKey ParseFixtermKeycode(int codepoint)
+    private static Hex1bKeyEvent? ParseFixtermKeyEvent(int codepoint, Hex1bModifiers modifiers)
     {
+        if (!Rune.IsValid(codepoint))
+            return null;
+
+        var rune = new Rune(codepoint);
+        var text = rune.ToString();
+
         return codepoint switch
         {
-            9 => Hex1bKey.Tab,
-            13 => Hex1bKey.Enter,
-            27 => Hex1bKey.Escape,
-            32 => Hex1bKey.Spacebar,
-            127 => Hex1bKey.Backspace,
-            >= 'a' and <= 'z' => KeyMapper.ToHex1bKey((ConsoleKey)((int)ConsoleKey.A + (codepoint - 'a'))),
-            >= 'A' and <= 'Z' => KeyMapper.ToHex1bKey((ConsoleKey)((int)ConsoleKey.A + (codepoint - 'A'))),
-            >= '0' and <= '9' => KeyMapper.ToHex1bKey((ConsoleKey)((int)ConsoleKey.D0 + (codepoint - '0'))),
-            _ => Hex1bKey.None
+            9 => new Hex1bKeyEvent(Hex1bKey.Tab, '\t', modifiers),
+            13 => new Hex1bKeyEvent(Hex1bKey.Enter, '\r', modifiers),
+            27 => new Hex1bKeyEvent(Hex1bKey.Escape, '\x1b', modifiers),
+            ' ' => new Hex1bKeyEvent(Hex1bKey.Spacebar, ' ', modifiers),
+            '\x7f' => new Hex1bKeyEvent(Hex1bKey.Backspace, '\x7f', modifiers),
+            >= 'a' and <= 'z' => new Hex1bKeyEvent(
+                KeyMapper.ToHex1bKey((ConsoleKey)((int)ConsoleKey.A + (codepoint - 'a'))), text, modifiers),
+            >= 'A' and <= 'Z' => new Hex1bKeyEvent(
+                KeyMapper.ToHex1bKey((ConsoleKey)((int)ConsoleKey.A + (codepoint - 'A'))), text, modifiers),
+            >= '0' and <= '9' => new Hex1bKeyEvent(
+                KeyMapper.ToHex1bKey((ConsoleKey)((int)ConsoleKey.D0 + (codepoint - '0'))), text, modifiers),
+            _ when !Rune.IsControl(rune) => new Hex1bKeyEvent(Hex1bKey.None, text, modifiers),
+            _ => null
         };
     }
 

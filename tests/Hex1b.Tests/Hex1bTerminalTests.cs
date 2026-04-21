@@ -719,6 +719,62 @@ public class Hex1bTerminalTests
     }
 
     [Fact]
+    public async Task PresentationInput_CsiU_NonAsciiCharacter_UpdatesTextBox()
+    {
+        await using var presentation = new QueuedInputPresentationAdapter();
+        using var workload = new Hex1bAppWorkloadAdapter();
+        await using var terminal = new Hex1bTerminal(new Hex1bTerminalOptions
+        {
+            PresentationAdapter = presentation,
+            WorkloadAdapter = workload,
+            Width = 80,
+            Height = 24
+        });
+
+        var text = "";
+        var textChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using var app = new Hex1bApp(
+            ctx => Task.FromResult<Hex1bWidget>(
+                new VStackWidget([
+                    new TextBoxWidget("")
+                        .OnTextChanged(args =>
+                        {
+                            text = args.NewText;
+                            if (args.NewText == "é")
+                            {
+                                textChanged.TrySetResult();
+                            }
+                            return Task.CompletedTask;
+                        })
+                ])
+            ),
+            new Hex1bAppOptions
+            {
+                WorkloadAdapter = workload,
+                EnableDefaultCtrlCExit = false
+            }
+        );
+
+        using var cts = new CancellationTokenSource();
+        var runTask = app.RunAsync(cts.Token);
+
+        await new Hex1bTerminalInputSequenceBuilder()
+            .WaitUntil(s => s.InAlternateScreen, TimeSpan.FromSeconds(2), "app started")
+            .Build()
+            .ApplyAsync(terminal, TestContext.Current.CancellationToken);
+
+        // CSI u non-ASCII input (é); this can be produced by dead-key composition in modern terminals.
+        presentation.EnqueueInput("\x1b[233;1u");
+
+        await textChanged.Task.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+        Assert.Equal("é", text);
+
+        cts.Cancel();
+        await runTask;
+    }
+
+    [Fact]
     public async Task AppInput_BareEscape_TriggersEscapeBinding()
     {
         await using var presentation = new QueuedInputPresentationAdapter();
