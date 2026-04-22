@@ -4,7 +4,7 @@ namespace Hex1b.Tests;
 
 public class ConsolePresentationAdapterTests
 {
-    [Theory]
+    [WindowsOnlyTheory]
     [InlineData(0x45, '\0', false, false, false, "e")]
     [InlineData(0x45, '\0', false, false, true, "E")]
     [InlineData(0x31, '\0', false, false, false, "1")]
@@ -25,7 +25,7 @@ public class ConsolePresentationAdapterTests
         Assert.Equal(expected, text);
     }
 
-    [Theory]
+    [WindowsOnlyTheory]
     [InlineData(0x45, true, false)]
     [InlineData(0x45, false, true)]
     public void WindowsConsoleDriver_GetPrintableText_DoesNotInventModifiedCharacters(
