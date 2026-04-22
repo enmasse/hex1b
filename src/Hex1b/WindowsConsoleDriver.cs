@@ -585,8 +585,10 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
             return null;
         }
 
-        // Don't try to synthesize plain Ctrl shortcuts from layout.
-        if (hasCtrl && !hasAlt)
+        // Modified key combinations are handled elsewhere (Ctrl control chars,
+        // Alt-prefixed escape sequences, and AltGr via UnicodeChar when present).
+        // Avoid synthesizing printable text from layout for modified keys.
+        if (hasCtrl || hasAlt)
         {
             return null;
         }
