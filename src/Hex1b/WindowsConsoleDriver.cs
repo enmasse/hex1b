@@ -64,6 +64,9 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
     private const ushort VK_F10 = 0x79;
     private const ushort VK_F11 = 0x7A;
     private const ushort VK_F12 = 0x7B;
+    private const ushort VK_SHIFT = 0x10;
+    private const ushort VK_CONTROL = 0x11;
+    private const ushort VK_MENU = 0x12;
     // Printable OEM punctuation keys used when some Windows console hosts report
     // KEY_EVENT_RECORD.UnicodeChar == '\0' for ordinary text input. This covers
     // the standard US-layout punctuation set so commands, paths, and quotes still
@@ -428,7 +431,7 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
             return;
         }
 
-        var text = GetPrintableText(vk, ch, hasCtrl, hasAlt, hasShift);
+        var text = GetPrintableText(vk, ch, hasCtrl, hasAlt, hasShift, key.wVirtualScanCode);
         if (!string.IsNullOrEmpty(text))
         {
             for (int repeat = 0; repeat < repeatCount; repeat++)
@@ -509,11 +512,26 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
         }
     }
 
-    internal static string? GetPrintableText(ushort vk, char ch, bool hasCtrl, bool hasAlt, bool hasShift)
+    internal static string? GetPrintableText(
+        ushort vk,
+        char ch,
+        bool hasCtrl,
+        bool hasAlt,
+        bool hasShift,
+        ushort scanCode = 0)
     {
         if (ch != 0)
         {
             return ch.ToString();
+        }
+
+        // Some console hosts report UnicodeChar == '\0' for printable input on non-US
+        // layouts. Try resolving through the active keyboard layout before falling back
+        // to a US-centric virtual-key map.
+        var resolvedText = TryResolvePrintableTextFromKeyboardLayout(vk, scanCode, hasCtrl, hasAlt, hasShift);
+        if (!string.IsNullOrEmpty(resolvedText))
+        {
+            return resolvedText;
         }
 
         // Some Windows terminal hosts deliver KEY_EVENT_RECORDs with a zero
@@ -553,6 +571,84 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
             VK_OEM_7 => hasShift ? "\"" : "'",
             _ => null
         };
+    }
+
+    private static string? TryResolvePrintableTextFromKeyboardLayout(
+        ushort vk,
+        ushort scanCode,
+        bool hasCtrl,
+        bool hasAlt,
+        bool hasShift)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
+        // Don't try to synthesize plain Ctrl shortcuts from layout.
+        if (hasCtrl && !hasAlt)
+        {
+            return null;
+        }
+
+        var keyState = new byte[256];
+        if (!GetKeyboardState(keyState))
+        {
+            return null;
+        }
+
+        if (hasShift)
+        {
+            keyState[VK_SHIFT] |= 0x80;
+        }
+        if (hasCtrl)
+        {
+            keyState[VK_CONTROL] |= 0x80;
+        }
+        if (hasAlt)
+        {
+            keyState[VK_MENU] |= 0x80;
+        }
+
+        var hkl = GetKeyboardLayout(0);
+        if (hkl == nint.Zero)
+        {
+            return null;
+        }
+
+        var output = new StringBuilder(8);
+        var result = ToUnicodeEx(vk, scanCode, keyState, output, output.Capacity, 0, hkl);
+        if (result == -1)
+        {
+            // This VK was a dead key (e.g. ´, `, ^, ¨).  ToUnicodeEx has just placed it
+            // into its internal accumulator.  If we leave it there, the next call will
+            // compose it with whatever key happens to be processed next, producing a
+            // wrong character.  Drain the accumulator by calling ToUnicodeEx again with
+            // VK_SPACE so the dead key is consumed harmlessly.
+            var drain = new StringBuilder(8);
+            ToUnicodeEx(VK_SPACE, 0x39, keyState, drain, drain.Capacity, 0, hkl);
+            return null;
+        }
+        if (result <= 0)
+        {
+            return null;
+        }
+
+        var text = output.ToString(0, result);
+        if (text.Length == 0)
+        {
+            return null;
+        }
+
+        for (var i = 0; i < text.Length; i++)
+        {
+            if (char.IsControl(text[i]))
+            {
+                return null;
+            }
+        }
+
+        return text;
     }
 
     internal static bool TryTranslateWin32InputSequence(string sequence, out byte[] bytes)
@@ -634,7 +730,8 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
             return true;
         }
 
-        var text = GetPrintableText(vk, unicodeChar, hasCtrl, hasAlt, hasShift);
+        var scanCode = unchecked((ushort)values[1]);
+        var text = GetPrintableText(vk, unicodeChar, hasCtrl, hasAlt, hasShift, scanCode);
         if (string.IsNullOrEmpty(text))
         {
             return true;
@@ -956,6 +1053,22 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
     
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool GetConsoleScreenBufferInfo(nint hConsoleOutput, out CONSOLE_SCREEN_BUFFER_INFO lpConsoleScreenBufferInfo);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool GetKeyboardState(byte[] lpKeyState);
+
+    [DllImport("user32.dll")]
+    private static extern nint GetKeyboardLayout(uint idThread);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int ToUnicodeEx(
+        uint wVirtKey,
+        uint wScanCode,
+        byte[] lpKeyState,
+        [Out] StringBuilder pwszBuff,
+        int cchBuff,
+        uint wFlags,
+        nint dwhkl);
     
     [StructLayout(LayoutKind.Sequential)]
     private struct COORD
