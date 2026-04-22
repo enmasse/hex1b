@@ -34,7 +34,7 @@ public class KeyboardInputInternationalTests
     // if this path breaks, every non-ASCII keystroke is silently dropped.
     // =========================================================================
 
-    [Theory]
+    [WindowsOnlyTheory]
     // Swedish keyboard
     [InlineData('å', "å")]    // ring-a
     [InlineData('ä', "ä")]    // a-umlaut
@@ -92,7 +92,7 @@ public class KeyboardInputInternationalTests
     // still works even when the console host omits the unicode char.
     // =========================================================================
 
-    [Theory]
+    [WindowsOnlyTheory]
     // Letters — lower and uppercase via Shift
     [InlineData(0x41, false, false, false, "a")]   // VK_A
     [InlineData(0x41, false, false, true,  "A")]   // VK_A + Shift
@@ -163,7 +163,7 @@ public class KeyboardInputInternationalTests
     // AltGr (which sets both Ctrl+Alt on Windows) is handled via UnicodeChar.
     // =========================================================================
 
-    [Theory]
+    [WindowsOnlyTheory]
     [InlineData(0x41, true,  false, false)]   // Ctrl+A
     [InlineData(0x45, true,  false, false)]   // Ctrl+E
     [InlineData(0x53, true,  false, false)]   // Ctrl+S
@@ -179,7 +179,7 @@ public class KeyboardInputInternationalTests
         Assert.Null(result);
     }
 
-    [Theory]
+    [WindowsOnlyTheory]
     // AltGr (Right-Alt) on Windows sets BOTH hasCtrl and hasAlt.
     // When the console host provides UnicodeChar the character must be returned.
     [InlineData(0x45, '€', true, true,  false, "€")]  // AltGr+E = € (Swedish/German/Italian)
