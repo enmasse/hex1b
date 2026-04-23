@@ -247,6 +247,21 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
 
         Console.OutputEncoding = Encoding.UTF8;
         
+        // Ensure UTF-8 output so WriteFile sends correct multi-byte sequences.
+        // Without this, Native AOT binaries use the system default code page
+        // (e.g. 437) and Unicode characters are garbled.
+        _originalOutputCodePage = GetConsoleOutputCP();
+        if (_originalOutputCodePage != 65001)
+        {
+            if (!SetConsoleOutputCP(65001))
+            {
+                SetConsoleMode(_inputHandle, _originalInputMode);
+                SetConsoleMode(_outputHandle, _originalOutputMode);
+                var error = Marshal.GetLastWin32Error();
+                throw new InvalidOperationException($"SetConsoleOutputCP failed (error {error}).");
+            }
+        }
+        
         _inRawMode = true;
         Console.TreatControlCAsInput = true;
     }
@@ -258,6 +273,11 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
         SetConsoleMode(_inputHandle, _originalInputMode);
         SetConsoleMode(_outputHandle, _originalOutputMode);
         SetConsoleOutputCP(_originalOutputCodePage);
+        
+        if (_originalOutputCodePage != 0 && _originalOutputCodePage != 65001)
+        {
+            SetConsoleOutputCP(_originalOutputCodePage);
+        }
         
         _inRawMode = false;
         Console.TreatControlCAsInput = false;
@@ -1451,6 +1471,12 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
     
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool FlushFileBuffers(nint hFile);
+    
+    [DllImport("kernel32.dll")]
+    private static extern uint GetConsoleOutputCP();
+    
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetConsoleOutputCP(uint wCodePageID);
     
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool GetConsoleScreenBufferInfo(nint hConsoleOutput, out CONSOLE_SCREEN_BUFFER_INFO lpConsoleScreenBufferInfo);
