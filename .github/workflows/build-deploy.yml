@@ -150,22 +150,21 @@ jobs:
           name: native-linux-arm64
           path: src/Hex1b/runtimes/linux-arm64/native/libhex1binterop.so
 
-  # Disabled: macos-15-large (x64) runner has availability issues
-  # build-native-osx-x64:
-  #   runs-on: macos-15-large
-  #   steps:
-  #     - name: Checkout code
-  #       uses: actions/checkout@v4
-  #
-  #     - name: Build native library
-  #       working-directory: src/Hex1b/native
-  #       run: make
-  #
-  #     - name: Upload artifact
-  #       uses: actions/upload-artifact@v4
-  #       with:
-  #         name: native-osx-x64
-  #         path: src/Hex1b/runtimes/osx-x64/native/libhex1binterop.dylib
+  build-native-osx-x64:
+    runs-on: macos-13
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build native library
+        working-directory: src/Hex1b/native
+        run: make
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-osx-x64
+          path: src/Hex1b/runtimes/osx-x64/native/libhex1binterop.dylib
 
   build-native-osx-arm64:
     runs-on: macos-15
@@ -227,7 +226,7 @@ jobs:
 
   build-pr:
     runs-on: ubuntu-latest
-    needs: [test, build-native-linux-x64, build-native-linux-arm64, build-native-osx-arm64, build-pty-host-windows-x64, build-pty-host-windows-arm64]
+    needs: [test, build-native-linux-x64, build-native-linux-arm64, build-native-osx-x64, build-native-osx-arm64, build-pty-host-windows-x64, build-pty-host-windows-arm64]
     if: github.event_name == 'pull_request'
     permissions:
       contents: read
@@ -256,6 +255,12 @@ jobs:
         with:
           name: native-linux-arm64
           path: src/Hex1b/runtimes/linux-arm64/native
+
+      - name: Download native library - osx-x64
+        uses: actions/download-artifact@v4
+        with:
+          name: native-osx-x64
+          path: src/Hex1b/runtimes/osx-x64/native
 
       - name: Download native library - osx-arm64
         uses: actions/download-artifact@v4
@@ -292,11 +297,17 @@ jobs:
         run: |
           dotnet pack src/Hex1b.McpServer/Hex1b.McpServer.csproj -c Release -p:PackageVersion=${{ steps.version.outputs.pr }} -o ./artifacts
 
+      - name: Restore Hex1b.Tool against packaged Hex1b (PR version for GH Packages)
+        id: tool_pack_restore
+        uses: ./.github/actions/restore-hex1b-tool-pack
+        with:
+          package-version: ${{ steps.version.outputs.pr }}
+
       - name: Build and pack Hex1b.Tool (PR version for GH Packages)
         env:
           HEX1B_VERSION: ${{ steps.version.outputs.pr }}
         run: |
-          dotnet pack src/Hex1b.Tool/Hex1b.Tool.csproj -c Release -p:PackageVersion=${{ steps.version.outputs.pr }} -o ./artifacts
+          dotnet pack src/Hex1b.Tool/Hex1b.Tool.csproj -c Release -p:PackageVersion=${{ steps.version.outputs.pr }} -p:UseHex1bPackageReference=true -p:Hex1bPackageVersion=${{ steps.version.outputs.pr }} --configfile "${{ steps.tool_pack_restore.outputs.config_path }}" --no-restore -o ./artifacts
 
       - name: Verify package contents
         run: |
@@ -314,14 +325,36 @@ jobs:
           unzip -l ./artifacts/Hex1b.McpServer.${{ steps.version.outputs.pr }}.nupkg | head -30
           echo ""
           echo "Hex1b.Tool package contents:"
-          unzip -l ./artifacts/Hex1b.Tool.${{ steps.version.outputs.pr }}.nupkg | grep -E "tools|DotnetToolSettings|hex1bpty" || echo "No tool settings found in Hex1b.Tool package!"
-          tool_windows_assets=$(unzip -Z1 ./artifacts/Hex1b.Tool.${{ steps.version.outputs.pr }}.nupkg | grep -E '^tools/.*/any/runtimes/win-(x64|arm64)/native/+hex1bpty\.exe$' || true)
-          if [ -z "$tool_windows_assets" ]; then
+          unzip -l ./artifacts/Hex1b.Tool.${{ steps.version.outputs.pr }}.nupkg | grep -E "tools|DotnetToolSettings|hex1bpty|hex1binterop" || echo "No tool settings found in Hex1b.Tool package!"
+          tool_package_contents=$(unzip -Z1 ./artifacts/Hex1b.Tool.${{ steps.version.outputs.pr }}.nupkg)
+          expected_tool_assets=(
+            "tools/net10.0/any/runtimes/linux-x64/native/libhex1binterop.so"
+            "tools/net10.0/any/runtimes/linux-arm64/native/libhex1binterop.so"
+            "tools/net10.0/any/runtimes/osx-x64/native/libhex1binterop.dylib"
+            "tools/net10.0/any/runtimes/osx-arm64/native/libhex1binterop.dylib"
+            "tools/net10.0/any/runtimes/win-x64/native/hex1bpty.exe"
+            "tools/net10.0/any/runtimes/win-arm64/native/hex1bpty.exe"
+          )
+          missing_tool_assets=()
+          for asset in "${expected_tool_assets[@]}"; do
+            if ! grep -Fxq "$asset" <<<"$tool_package_contents"; then
+              missing_tool_assets+=("$asset")
+            fi
+          done
+          if [ ${#missing_tool_assets[@]} -gt 0 ]; then
             echo ""
-            echo "hex1bpty.exe is missing from the Hex1b.Tool package."
+            echo "Hex1b.Tool is missing required native assets:"
+            printf '  %s\n' "${missing_tool_assets[@]}"
             exit 1
           fi
-          echo "$tool_windows_assets"
+          unexpected_tool_root_native=$(printf '%s\n' "$tool_package_contents" | grep -E '^tools/.*/any/libhex1binterop\.(so|dylib)$' || true)
+          if [ -n "$unexpected_tool_root_native" ]; then
+            echo ""
+            echo "Hex1b.Tool should not carry host-specific native libraries at the tool root:"
+            echo "$unexpected_tool_root_native"
+            exit 1
+          fi
+          printf '%s\n' "${expected_tool_assets[@]}"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -331,7 +364,7 @@ jobs:
 
   build-release:
     runs-on: ubuntu-latest
-    needs: [test, build-native-linux-x64, build-native-linux-arm64, build-native-osx-arm64, build-pty-host-windows-x64, build-pty-host-windows-arm64]
+    needs: [test, build-native-linux-x64, build-native-linux-arm64, build-native-osx-x64, build-native-osx-arm64, build-pty-host-windows-x64, build-pty-host-windows-arm64]
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
@@ -360,6 +393,12 @@ jobs:
         with:
           name: native-linux-arm64
           path: src/Hex1b/runtimes/linux-arm64/native
+
+      - name: Download native library - osx-x64
+        uses: actions/download-artifact@v4
+        with:
+          name: native-osx-x64
+          path: src/Hex1b/runtimes/osx-x64/native
 
       - name: Download native library - osx-arm64
         uses: actions/download-artifact@v4
@@ -396,11 +435,17 @@ jobs:
         run: |
           dotnet pack src/Hex1b.McpServer/Hex1b.McpServer.csproj -c Release -p:PackageVersion=${{ steps.version.outputs.release }} -o ./artifacts
 
+      - name: Restore Hex1b.Tool against packaged Hex1b (release version for NuGet.org)
+        id: tool_pack_restore
+        uses: ./.github/actions/restore-hex1b-tool-pack
+        with:
+          package-version: ${{ steps.version.outputs.release }}
+
       - name: Build and pack Hex1b.Tool (release version for NuGet.org)
         env:
           HEX1B_VERSION: ${{ steps.version.outputs.release }}
         run: |
-          dotnet pack src/Hex1b.Tool/Hex1b.Tool.csproj -c Release -p:PackageVersion=${{ steps.version.outputs.release }} -o ./artifacts
+          dotnet pack src/Hex1b.Tool/Hex1b.Tool.csproj -c Release -p:PackageVersion=${{ steps.version.outputs.release }} -p:UseHex1bPackageReference=true -p:Hex1bPackageVersion=${{ steps.version.outputs.release }} --configfile "${{ steps.tool_pack_restore.outputs.config_path }}" --no-restore -o ./artifacts
 
       - name: Verify package contents
         run: |
@@ -418,14 +463,36 @@ jobs:
           unzip -l ./artifacts/Hex1b.McpServer.${{ steps.version.outputs.release }}.nupkg | head -30
           echo ""
           echo "Hex1b.Tool package contents:"
-          unzip -l ./artifacts/Hex1b.Tool.${{ steps.version.outputs.release }}.nupkg | grep -E "tools|DotnetToolSettings|hex1bpty" || echo "No tool settings found in Hex1b.Tool package!"
-          tool_windows_assets=$(unzip -Z1 ./artifacts/Hex1b.Tool.${{ steps.version.outputs.release }}.nupkg | grep -E '^tools/.*/any/runtimes/win-(x64|arm64)/native/hex1bpty\.exe$' || true)
-          if [ -z "$tool_windows_assets" ]; then
+          unzip -l ./artifacts/Hex1b.Tool.${{ steps.version.outputs.release }}.nupkg | grep -E "tools|DotnetToolSettings|hex1bpty|hex1binterop" || echo "No tool settings found in Hex1b.Tool package!"
+          tool_package_contents=$(unzip -Z1 ./artifacts/Hex1b.Tool.${{ steps.version.outputs.release }}.nupkg)
+          expected_tool_assets=(
+            "tools/net10.0/any/runtimes/linux-x64/native/libhex1binterop.so"
+            "tools/net10.0/any/runtimes/linux-arm64/native/libhex1binterop.so"
+            "tools/net10.0/any/runtimes/osx-x64/native/libhex1binterop.dylib"
+            "tools/net10.0/any/runtimes/osx-arm64/native/libhex1binterop.dylib"
+            "tools/net10.0/any/runtimes/win-x64/native/hex1bpty.exe"
+            "tools/net10.0/any/runtimes/win-arm64/native/hex1bpty.exe"
+          )
+          missing_tool_assets=()
+          for asset in "${expected_tool_assets[@]}"; do
+            if ! grep -Fxq "$asset" <<<"$tool_package_contents"; then
+              missing_tool_assets+=("$asset")
+            fi
+          done
+          if [ ${#missing_tool_assets[@]} -gt 0 ]; then
             echo ""
-            echo "hex1bpty.exe is missing from the Hex1b.Tool package."
+            echo "Hex1b.Tool is missing required native assets:"
+            printf '  %s\n' "${missing_tool_assets[@]}"
             exit 1
           fi
-          echo "$tool_windows_assets"
+          unexpected_tool_root_native=$(printf '%s\n' "$tool_package_contents" | grep -E '^tools/.*/any/libhex1binterop\.(so|dylib)$' || true)
+          if [ -n "$unexpected_tool_root_native" ]; then
+            echo ""
+            echo "Hex1b.Tool should not carry host-specific native libraries at the tool root:"
+            echo "$unexpected_tool_root_native"
+            exit 1
+          fi
+          printf '%s\n' "${expected_tool_assets[@]}"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
