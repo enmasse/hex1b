@@ -20,6 +20,9 @@ namespace Hex1b.Tests;
 [Collection("CPU-Intensive")]
 public class MultiCursorPerformanceTests
 {
+    private const double DefaultSingleKeystrokeThresholdMs = 50;
+    private const double WindowsCiSingleKeystrokeThresholdMs = 70;
+
     /// <summary>
     /// Builds a document with repeating lines, each containing a target word,
     /// then sets up N cursors each selecting that word on a different line.
@@ -321,8 +324,8 @@ public class MultiCursorPerformanceTests
 
     private static double GetSingleKeystrokeThresholdMs() =>
         OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("CI") is not null
-            ? 70
-            : 50;
+            ? WindowsCiSingleKeystrokeThresholdMs
+            : DefaultSingleKeystrokeThresholdMs;
 
     [Fact]
     public void SingleKeystroke_DoesNotRebuildFullText()
