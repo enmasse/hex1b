@@ -287,14 +287,15 @@ public class TerminalWidgetSizeAlignmentTests
         await using var terminal = Hex1bTerminal.CreateBuilder()
             .WithDimensions(80, 24)
             .WithDiagnosticShell()
+            .WithHeadless()
             .Build();
 
         ((ITerminalLifecycleAwarePresentationAdapter)handle).TerminalCreated(terminal);
 
         var buffer = handle.GetScreenBuffer();
 
-        Assert.Equal(buffer.GetLength(0), handle.Height);
-        Assert.Equal(buffer.GetLength(1), handle.Width);
+        Assert.Equal(handle.Height, buffer.GetLength(0));
+        Assert.Equal(handle.Width, buffer.GetLength(1));
         Assert.Equal(terminal.Width, handle.Width);
         Assert.Equal(terminal.Height, handle.Height);
     }
