@@ -105,6 +105,7 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
     private const uint ENABLE_WRAP_AT_EOL_OUTPUT = 0x0002;
     private const uint ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004;
     private const uint DISABLE_NEWLINE_AUTO_RETURN = 0x0008;
+    private const uint Utf8CodePage = 65001;
     
     // Wait constants
     private const uint WAIT_OBJECT_0 = 0;
@@ -114,6 +115,7 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
     private readonly nint _outputHandle;
     private uint _originalInputMode;
     private uint _originalOutputMode;
+    private uint _originalOutputCodePage;
     private bool _inRawMode;
     private bool _disposed;
     private int _lastWidth;
@@ -122,6 +124,7 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
     // Buffer for pending bytes from key events
     private readonly Queue<byte> _pendingBytes = new();
     private readonly StringBuilder _pendingVtInput = new();
+    private readonly StringBuilder _pendingPrintableInput = new();
     
     // Track previous mouse state for generating proper events
     private uint _lastMouseButtonState;
@@ -231,6 +234,18 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
             var error = Marshal.GetLastWin32Error();
             throw new InvalidOperationException($"SetConsoleMode failed for output (error {error}).");
         }
+
+        _originalOutputCodePage = GetConsoleOutputCP();
+
+        if (!SetConsoleOutputCP(Utf8CodePage))
+        {
+            SetConsoleMode(_inputHandle, _originalInputMode);
+            SetConsoleMode(_outputHandle, _originalOutputMode);
+            var error = Marshal.GetLastWin32Error();
+            throw new InvalidOperationException($"SetConsoleOutputCP failed (error {error}).");
+        }
+
+        Console.OutputEncoding = Encoding.UTF8;
         
         _inRawMode = true;
         Console.TreatControlCAsInput = true;
@@ -242,6 +257,7 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
         
         SetConsoleMode(_inputHandle, _originalInputMode);
         SetConsoleMode(_outputHandle, _originalOutputMode);
+        SetConsoleOutputCP(_originalOutputCodePage);
         
         _inRawMode = false;
         Console.TreatControlCAsInput = false;
@@ -286,6 +302,15 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
                     
                     if (waitResult == WAIT_TIMEOUT)
                     {
+                        if (_pendingPrintableInput.Length > 0)
+                        {
+                            FlushPendingPrintableInput();
+                            if (_pendingBytes.Count > 0)
+                            {
+                                return DrainPendingBytes(buffer.Span);
+                            }
+                        }
+
                         continue;
                     }
                     
@@ -361,10 +386,12 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
                 break;
                 
             case MOUSE_EVENT:
+                FlushPendingPrintableInput();
                 ProcessMouseEvent(ref record.MouseEvent);
                 break;
                 
             case WINDOW_BUFFER_SIZE_EVENT:
+                FlushPendingPrintableInput();
                 ProcessResizeEvent(ref record.WindowBufferSizeEvent);
                 break;
         }
@@ -399,6 +426,8 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
         var vtSequence = GetVtSequence(vk, hasCtrl, hasAlt, hasShift);
         if (vtSequence != null)
         {
+            FlushPendingPrintableInput();
+
             for (int repeat = 0; repeat < repeatCount; repeat++)
             {
                 foreach (var b in vtSequence)
@@ -412,6 +441,8 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
         // Handle Ctrl+letter combinations (Ctrl+A = 1, Ctrl+B = 2, etc.)
         if (hasCtrl && !hasAlt && ch >= 'A' - 64 && ch <= 'Z' - 64)
         {
+            FlushPendingPrintableInput();
+
             for (int repeat = 0; repeat < repeatCount; repeat++)
             {
                 _pendingBytes.Enqueue((byte)ch);
@@ -423,6 +454,8 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
         // This matches the VT sequence that Linux terminals generate for Alt+key
         if (hasAlt && !hasCtrl && ch != 0)
         {
+            FlushPendingPrintableInput();
+
             for (int repeat = 0; repeat < repeatCount; repeat++)
             {
                 _pendingBytes.Enqueue(0x1B); // ESC
@@ -436,9 +469,13 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
         {
             for (int repeat = 0; repeat < repeatCount; repeat++)
             {
-                EnqueueUtf8(text);
+                ProcessPrintableInputText(text);
             }
+
+            return;
         }
+
+        FlushPendingPrintableInput();
     }
 
     private void ProcessVirtualTerminalInputChar(char ch)
@@ -449,8 +486,18 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
         {
             if (_pendingVtInput[0] != '\x1b')
             {
-                EnqueueUtf8Char(_pendingVtInput[0]);
-                _pendingVtInput.Remove(0, 1);
+                if (!TryReadVirtualTerminalTextSegment(
+                    _pendingVtInput,
+                    flush: false,
+                    Console.InputEncoding,
+                    out var text,
+                    out var charsConsumed))
+                {
+                    return;
+                }
+
+                _pendingVtInput.Remove(0, charsConsumed);
+                EnqueueUtf8(text);
                 continue;
             }
 
@@ -478,13 +525,47 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
 
     private void FlushPendingVirtualTerminalInput()
     {
-        if (_pendingVtInput.Length == 0)
+        while (_pendingVtInput.Length > 0)
         {
-            return;
-        }
+            if (_pendingVtInput[0] != '\x1b')
+            {
+                if (!TryReadVirtualTerminalTextSegment(
+                    _pendingVtInput,
+                    flush: true,
+                    Console.InputEncoding,
+                    out var text,
+                    out var charsConsumed))
+                {
+                    return;
+                }
 
-        EnqueueUtf8(_pendingVtInput.ToString());
-        _pendingVtInput.Clear();
+                _pendingVtInput.Remove(0, charsConsumed);
+                EnqueueUtf8(text);
+                continue;
+            }
+
+            if (TryReadCompleteEscapeSequence(_pendingVtInput, out var sequence))
+            {
+                _pendingVtInput.Remove(0, sequence.Length);
+
+                if (TryTranslateWin32InputSequence(sequence, out var translated))
+                {
+                    foreach (var b in translated)
+                    {
+                        _pendingBytes.Enqueue(b);
+                    }
+                }
+                else
+                {
+                    EnqueueUtf8(sequence);
+                }
+
+                continue;
+            }
+
+            EnqueueUtf8Char(_pendingVtInput[0]);
+            _pendingVtInput.Remove(0, 1);
+        }
     }
 
     private void EnqueueUtf8Char(char value)
@@ -510,6 +591,317 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
         {
             _pendingBytes.Enqueue(b);
         }
+    }
+
+    private void ProcessPrintableInputText(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+
+        _pendingPrintableInput.Append(text);
+        FlushPendingPrintableInput(flush: false);
+    }
+
+    private void FlushPendingPrintableInput()
+        => FlushPendingPrintableInput(flush: true);
+
+    private void FlushPendingPrintableInput(bool flush)
+    {
+        while (_pendingPrintableInput.Length > 0)
+        {
+            if (!TryReadVirtualTerminalTextSegment(
+                _pendingPrintableInput,
+                flush,
+                Console.InputEncoding,
+                out var text,
+                out var charsConsumed))
+            {
+                return;
+            }
+
+            _pendingPrintableInput.Remove(0, charsConsumed);
+            EnqueueUtf8(text);
+        }
+    }
+
+    internal static bool TryReadVirtualTerminalTextSegment(
+        StringBuilder buffer,
+        bool flush,
+        Encoding inputEncoding,
+        out string text,
+        out int charsConsumed)
+    {
+        text = string.Empty;
+        charsConsumed = 0;
+
+        var segmentLength = 0;
+        while (segmentLength < buffer.Length && buffer[segmentLength] != '\x1b')
+        {
+            segmentLength++;
+        }
+
+        if (segmentLength == 0)
+        {
+            return false;
+        }
+
+        var raw = buffer.ToString(0, segmentLength);
+        if (!ContainsPotentiallyByteWidenedVirtualTerminalText(raw.AsSpan(), flush))
+        {
+            text = raw;
+            charsConsumed = raw.Length;
+            return true;
+        }
+
+        var bytes = new byte[raw.Length];
+        for (var i = 0; i < raw.Length; i++)
+        {
+            if (raw[i] > 0xFF)
+            {
+                text = raw;
+                charsConsumed = raw.Length;
+                return true;
+            }
+
+            bytes[i] = unchecked((byte)raw[i]);
+        }
+
+        var likelyUtf8Mojibake = HasKnownUtf8MojibakeLead(raw.AsSpan()) && LooksLikeUtf8ByteSequence(raw.AsSpan(), flush);
+        string utf8Decoded = string.Empty;
+        var utf8BytesUsed = 0;
+
+        if (likelyUtf8Mojibake)
+        {
+            TryDecodeByteWidenedText(bytes, flush, Encoding.UTF8, out utf8Decoded, out utf8BytesUsed);
+            if (utf8BytesUsed == 0 && !flush)
+            {
+                return false;
+            }
+        }
+
+        TryDecodeByteWidenedText(bytes, flush, inputEncoding, out var decoded, out var bytesUsed);
+
+        if (bytesUsed == 0)
+        {
+            if (utf8BytesUsed > 0)
+            {
+                text = utf8Decoded;
+                charsConsumed = utf8BytesUsed;
+                return true;
+            }
+
+            if (flush)
+            {
+                text = raw;
+                charsConsumed = raw.Length;
+                return true;
+            }
+
+            return false;
+        }
+
+        if (utf8BytesUsed >= bytesUsed && utf8BytesUsed > 0 &&
+            ShouldPreferDecodedVirtualTerminalText(raw.AsSpan(0, utf8BytesUsed), utf8Decoded.AsSpan()))
+        {
+            text = utf8Decoded;
+            charsConsumed = utf8BytesUsed;
+            return true;
+        }
+
+        if (ShouldPreferDecodedVirtualTerminalText(raw.AsSpan(0, bytesUsed), decoded.AsSpan()))
+        {
+            text = decoded;
+            charsConsumed = bytesUsed;
+            return true;
+        }
+
+        text = raw[..bytesUsed];
+        charsConsumed = bytesUsed;
+        return true;
+    }
+
+    private static bool HasKnownUtf8MojibakeLead(ReadOnlySpan<char> text)
+    {
+        if (text.Length == 0 || text[0] > 0xFF)
+        {
+            return false;
+        }
+
+        var b = unchecked((byte)text[0]);
+        return b is 0xC2 or 0xC3 or 0xE2 or 0xF0;
+    }
+
+    private static void TryDecodeByteWidenedText(byte[] bytes, bool flush, Encoding encoding, out string text, out int bytesUsed)
+    {
+        var decoder = encoding.GetDecoder();
+        var decodedChars = new char[encoding.GetMaxCharCount(bytes.Length)];
+        decoder.Convert(
+            bytes,
+            0,
+            bytes.Length,
+            decodedChars,
+            0,
+            decodedChars.Length,
+            flush,
+            out bytesUsed,
+            out var charsUsed,
+            out _);
+
+        text = new string(decodedChars, 0, charsUsed);
+    }
+
+    private static bool ContainsPotentiallyByteWidenedVirtualTerminalText(ReadOnlySpan<char> text, bool flush)
+    {
+        var hasSuspiciousSingleByteChars = false;
+
+        foreach (var ch in text)
+        {
+            if (ch > 0xFF)
+            {
+                return false;
+            }
+
+            if ((ch >= '\u0080' && ch <= '\u009F') || ch == '\u00A0')
+            {
+                hasSuspiciousSingleByteChars = true;
+            }
+        }
+
+        return hasSuspiciousSingleByteChars || LooksLikeUtf8ByteSequence(text, flush);
+    }
+
+    private static bool LooksLikeUtf8ByteSequence(ReadOnlySpan<char> text, bool flush)
+    {
+        for (var i = 0; i < text.Length; i++)
+        {
+            if (text[i] > 0xFF)
+            {
+                return false;
+            }
+
+            var b = unchecked((byte)text[i]);
+            int expectedContinuationBytes = b switch
+            {
+                >= 0xC2 and <= 0xDF => 1,
+                >= 0xE0 and <= 0xEF => 2,
+                >= 0xF0 and <= 0xF4 => 3,
+                _ => 0
+            };
+
+            if (expectedContinuationBytes == 0)
+            {
+                continue;
+            }
+
+            if (i + expectedContinuationBytes >= text.Length)
+            {
+                return !flush;
+            }
+
+            var isValid = true;
+            for (var j = 1; j <= expectedContinuationBytes; j++)
+            {
+                if (text[i + j] > 0xFF)
+                {
+                    isValid = false;
+                    break;
+                }
+
+                var continuation = unchecked((byte)text[i + j]);
+                if (continuation is < 0x80 or > 0xBF)
+                {
+                    isValid = false;
+                    break;
+                }
+            }
+
+            if (isValid)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool ShouldPreferDecodedVirtualTerminalText(
+        ReadOnlySpan<char> raw,
+        ReadOnlySpan<char> decoded)
+    {
+        if (decoded.Length == 0)
+        {
+            return false;
+        }
+
+        var rawScore = ScoreVirtualTerminalText(raw);
+        var decodedScore = ScoreVirtualTerminalText(decoded);
+
+        return decodedScore * raw.Length > rawScore * decoded.Length;
+    }
+
+    private static int ScoreVirtualTerminalText(ReadOnlySpan<char> text)
+    {
+        var score = 0;
+
+        foreach (var ch in text)
+        {
+            if (ch == '\uFFFD')
+            {
+                score -= 8;
+                continue;
+            }
+
+            if (ch <= 0x7F)
+            {
+                score += ch switch
+                {
+                    '\r' or '\n' or '\t' => 2,
+                    _ => 4
+                };
+
+                continue;
+            }
+
+            score += char.GetUnicodeCategory(ch) switch
+            {
+                UnicodeCategory.UppercaseLetter => 6,
+                UnicodeCategory.LowercaseLetter => 6,
+                UnicodeCategory.TitlecaseLetter => 6,
+                UnicodeCategory.ModifierLetter => 6,
+                UnicodeCategory.OtherLetter => 6,
+                UnicodeCategory.DecimalDigitNumber => 6,
+                UnicodeCategory.LetterNumber => 6,
+                UnicodeCategory.OtherNumber => 6,
+                UnicodeCategory.NonSpacingMark => 5,
+                UnicodeCategory.SpacingCombiningMark => 5,
+
+                UnicodeCategory.ConnectorPunctuation => 3,
+                UnicodeCategory.DashPunctuation => 3,
+                UnicodeCategory.OpenPunctuation => 3,
+                UnicodeCategory.ClosePunctuation => 3,
+                UnicodeCategory.InitialQuotePunctuation => 3,
+                UnicodeCategory.FinalQuotePunctuation => 3,
+                UnicodeCategory.OtherPunctuation => 3,
+
+                UnicodeCategory.SpaceSeparator => ch == '\u00A0' ? -4 : 2,
+
+                UnicodeCategory.Control => -12,
+                UnicodeCategory.Format => -12,
+                UnicodeCategory.Surrogate => -12,
+                UnicodeCategory.OtherNotAssigned => -12,
+
+                UnicodeCategory.CurrencySymbol => 0,
+                UnicodeCategory.MathSymbol => 0,
+                UnicodeCategory.ModifierSymbol => 0,
+                UnicodeCategory.OtherSymbol => 0,
+
+                _ => 0
+            };
+        }
+
+        return score;
     }
 
     internal static string? GetPrintableText(
@@ -949,6 +1341,7 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
         
         _pendingBytes.Clear();
         _pendingVtInput.Clear();
+        _pendingPrintableInput.Clear();
         FlushConsoleInputBuffer(_inputHandle);
     }
 
@@ -1022,9 +1415,15 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
     
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool GetConsoleMode(nint hConsoleHandle, out uint lpMode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint GetConsoleOutputCP();
     
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool SetConsoleMode(nint hConsoleHandle, uint dwMode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetConsoleOutputCP(uint wCodePageID);
     
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool GetNumberOfConsoleInputEvents(nint hConsoleInput, out uint lpcNumberOfEvents);

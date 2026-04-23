@@ -378,6 +378,122 @@ public class KeyboardInputInternationalTests
         Assert.False(handled);
     }
 
+    [Fact]
+    public void TryReadVirtualTerminalTextSegment_Cp850ByteWidenedChars_DecodesUsingInputEncoding()
+    {
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+
+        var buffer = new StringBuilder(new string(new[]
+        {
+            (char)134,
+            (char)132,
+            (char)148,
+            (char)160,
+        }));
+
+        var handled = WindowsConsoleDriver.TryReadVirtualTerminalTextSegment(
+            buffer,
+            flush: false,
+            Encoding.GetEncoding(850),
+            out var text,
+            out var charsConsumed);
+
+        Assert.True(handled);
+        Assert.Equal("åäöá", text);
+        Assert.Equal(4, charsConsumed);
+    }
+
+    [Fact]
+    public void TryReadVirtualTerminalTextSegment_Utf8ByteWidenedChars_DecodesUsingInputEncoding()
+    {
+        var bytes = Encoding.UTF8.GetBytes("åäöá");
+        var widenedChars = new char[bytes.Length];
+        for (var i = 0; i < bytes.Length; i++)
+        {
+            widenedChars[i] = (char)bytes[i];
+        }
+
+        var buffer = new StringBuilder(new string(widenedChars));
+
+        var handled = WindowsConsoleDriver.TryReadVirtualTerminalTextSegment(
+            buffer,
+            flush: false,
+            Encoding.UTF8,
+            out var text,
+            out var charsConsumed);
+
+        Assert.True(handled);
+        Assert.Equal("åäöá", text);
+        Assert.Equal(widenedChars.Length, charsConsumed);
+    }
+
+    [Fact]
+    public void TryReadVirtualTerminalTextSegment_Utf8ByteWidenedTextWithAsciiSeparators_DecodesUsingInputEncoding()
+    {
+        var bytes = Encoding.UTF8.GetBytes("å ä");
+        var widenedChars = new char[bytes.Length];
+        for (var i = 0; i < bytes.Length; i++)
+        {
+            widenedChars[i] = (char)bytes[i];
+        }
+
+        var buffer = new StringBuilder(new string(widenedChars));
+
+        var handled = WindowsConsoleDriver.TryReadVirtualTerminalTextSegment(
+            buffer,
+            flush: false,
+            Encoding.UTF8,
+            out var text,
+            out var charsConsumed);
+
+        Assert.True(handled);
+        Assert.Equal("å ä", text);
+        Assert.Equal(widenedChars.Length, charsConsumed);
+    }
+
+    [Fact]
+    public void TryReadVirtualTerminalTextSegment_Utf8ByteWidenedChars_PrefersUtf8WhenConsoleEncodingWouldMojibake()
+    {
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+
+        var bytes = Encoding.UTF8.GetBytes("ä");
+        var widenedChars = new char[bytes.Length];
+        for (var i = 0; i < bytes.Length; i++)
+        {
+            widenedChars[i] = (char)bytes[i];
+        }
+
+        var buffer = new StringBuilder(new string(widenedChars));
+
+        var handled = WindowsConsoleDriver.TryReadVirtualTerminalTextSegment(
+            buffer,
+            flush: false,
+            Encoding.GetEncoding(1252),
+            out var text,
+            out var charsConsumed);
+
+        Assert.True(handled);
+        Assert.Equal("ä", text);
+        Assert.Equal(widenedChars.Length, charsConsumed);
+    }
+
+    [Fact]
+    public void TryReadVirtualTerminalTextSegment_RealUnicodeLatin1Text_IsPreserved()
+    {
+        var buffer = new StringBuilder("£åä");
+
+        var handled = WindowsConsoleDriver.TryReadVirtualTerminalTextSegment(
+            buffer,
+            flush: false,
+            Encoding.UTF8,
+            out var text,
+            out var charsConsumed);
+
+        Assert.True(handled);
+        Assert.Equal("£åä", text);
+        Assert.Equal(3, charsConsumed);
+    }
+
     // =========================================================================
     // Section 8: Integration — TextBox correctly accepts international characters
     //

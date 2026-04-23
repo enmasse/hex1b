@@ -1,0 +1,13 @@
+{
+  "profiles": {
+    "TextBoxInternationalInputRepro": {
+      "commandName": "Project"
+    },
+    "TextBoxInternationalInputRepro (Windows Terminal)": {
+      "commandName": "Executable",
+      "executablePath": "wt.exe",
+      "workingDirectory": "$(ProjectDir)",
+      "commandLineArgs": "new-tab --title \"TextBoxInternationalInputRepro\" dotnet run --project \"TextBoxInternationalInputRepro.csproj\""
+    }
+  }
+}
