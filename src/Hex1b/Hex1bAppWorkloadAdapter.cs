@@ -396,9 +396,12 @@ public sealed class Hex1bAppWorkloadAdapter : IHex1bAppTerminalWorkloadAdapter, 
         _width = width;
         _height = height;
         
-        // Only fire resize event if dimensions changed AND we were already initialized
-        // (skip the initial dimension setup from terminal constructor)
-        if (changed && wasInitialized)
+        // Fire resize events when dimensions changed and either:
+        // 1) we were already initialized (normal resize), or
+        // 2) app has entered TUI mode (app is running and needs the first size signal)
+        //    This keeps constructor-time initialization quiet while ensuring
+        //    app-first/headless startup flows still get an initial resize event.
+        if (changed && (wasInitialized || _inTuiMode))
         {
             _inputChannel.Writer.TryWrite(new Hex1bResizeEvent(width, height));
         }

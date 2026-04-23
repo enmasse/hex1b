@@ -293,9 +293,14 @@ public class TerminalResizeTimingTests
     
     private static bool HasNonEmptyContent(TerminalCell[,] buffer, int height, int width)
     {
-        for (int y = 0; y < height; y++)
+        var bufferHeight = buffer.GetLength(0);
+        var bufferWidth = buffer.GetLength(1);
+        var scanHeight = Math.Min(height, bufferHeight);
+        var scanWidth = Math.Min(width, bufferWidth);
+
+        for (int y = 0; y < scanHeight; y++)
         {
-            for (int x = 0; x < width; x++)
+            for (int x = 0; x < scanWidth; x++)
             {
                 if (!string.IsNullOrWhiteSpace(buffer[y, x].Character))
                 {
