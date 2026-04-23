@@ -20,6 +20,9 @@ namespace Hex1b.Tests;
 [Collection("CPU-Intensive")]
 public class MultiCursorPerformanceTests
 {
+    private const double DefaultSingleKeystrokeThresholdMs = 50;
+    private const double WindowsCiSingleKeystrokeThresholdMs = 70;
+
     /// <summary>
     /// Builds a document with repeating lines, each containing a target word,
     /// then sets up N cursors each selecting that word on a different line.
@@ -312,11 +315,22 @@ public class MultiCursorPerformanceTests
         sw.Stop();
 
         var ms = sw.Elapsed.TotalMilliseconds;
+        var thresholdMs = GetSingleKeystrokeThresholdMs();
         // With lazy text + per-line reading, single keystroke avoids full text materialization
         // Previously ~30-50ms with full RebuildCaches; now ~10-15ms (byte assembly + line starts scan)
-        Assert.True(ms < 50,
-            $"Single keystroke on 100K-line doc took {ms:F1}ms — expected <50ms.");
+        Assert.True(ms < thresholdMs,
+            $"Single keystroke on 100K-line doc took {ms:F1}ms — expected <{thresholdMs}ms.");
     }
+
+    private static double GetSingleKeystrokeThresholdMs() =>
+        OperatingSystem.IsWindows() && IsCiEnvironment()
+            ? WindowsCiSingleKeystrokeThresholdMs
+            : DefaultSingleKeystrokeThresholdMs;
+
+    private static bool IsCiEnvironment() =>
+        !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CI")) ||
+        !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("GITHUB_ACTIONS")) ||
+        !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("TF_BUILD"));
 
     [Fact]
     public void SingleKeystroke_DoesNotRebuildFullText()

@@ -393,7 +393,14 @@ public sealed class TerminalWidgetHandle : ICellImpactAwarePresentationAdapter, 
         // Prefer the terminal's authoritative buffer when available
         if (_terminal is { } terminal)
         {
-            var (buffer, _, _, _, _) = terminal.GetScreenBufferSnapshot();
+            var (buffer, width, height, cursorX, cursorY) = terminal.GetScreenBufferSnapshot();
+            // Keep handle state synchronized with the authoritative snapshot so
+            // callers that read Width/Height/Cursor immediately after this call
+            // observe dimensions that match the returned buffer.
+            _width = width;
+            _height = height;
+            _cursorX = cursorX;
+            _cursorY = cursorY;
             return buffer;
         }
         
@@ -426,7 +433,9 @@ public sealed class TerminalWidgetHandle : ICellImpactAwarePresentationAdapter, 
         if (_terminal is { } terminal)
         {
             var (buffer, width, height, cursorX, cursorY) = terminal.GetScreenBufferSnapshot();
-            // Sync cursor position from the terminal's authoritative state
+            _width = width;
+            _height = height;
+            // Sync dimensions and cursor position from the terminal's authoritative state
             _cursorX = cursorX;
             _cursorY = cursorY;
             return (buffer, width, height);

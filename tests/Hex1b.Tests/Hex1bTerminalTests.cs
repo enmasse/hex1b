@@ -1192,6 +1192,22 @@ public class Hex1bTerminalTests
     }
 
     [Fact]
+    public async Task ResizeAsync_FirstResizeInTuiMode_FiresResizeEvent()
+    {
+        using var workload = new Hex1bAppWorkloadAdapter();
+
+        workload.EnterTuiMode();
+        await workload.ResizeAsync(80, 24, TestContext.Current.CancellationToken);
+
+        var hasEvent = workload.InputEvents.TryRead(out var evt);
+        Assert.True(hasEvent, "First resize while app is running should fire a resize event");
+
+        var resizeEvent = Assert.IsType<Hex1bResizeEvent>(evt);
+        Assert.Equal(80, resizeEvent.Width);
+        Assert.Equal(24, resizeEvent.Height);
+    }
+
+    [Fact]
     public async Task ResizeAsync_SameDimensions_DoesNotFireEvent()
     {
         using var workload = new Hex1bAppWorkloadAdapter();
