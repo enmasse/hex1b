@@ -312,14 +312,17 @@ public class MultiCursorPerformanceTests
         sw.Stop();
 
         var ms = sw.Elapsed.TotalMilliseconds;
-        var thresholdMs = OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("CI") is not null
-            ? 70
-            : 50;
+        var thresholdMs = GetSingleKeystrokeThresholdMs();
         // With lazy text + per-line reading, single keystroke avoids full text materialization
         // Previously ~30-50ms with full RebuildCaches; now ~10-15ms (byte assembly + line starts scan)
         Assert.True(ms < thresholdMs,
             $"Single keystroke on 100K-line doc took {ms:F1}ms — expected <{thresholdMs}ms.");
     }
+
+    private static double GetSingleKeystrokeThresholdMs() =>
+        OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("CI") is not null
+            ? 70
+            : 50;
 
     [Fact]
     public void SingleKeystroke_DoesNotRebuildFullText()
