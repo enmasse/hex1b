@@ -296,7 +296,7 @@ public class TerminalWidgetSizeAlignmentTests
 
         Assert.Equal(handle.Height, buffer.GetLength(0));
         Assert.Equal(handle.Width, buffer.GetLength(1));
-        Assert.Equal(terminal.Width, handle.Width);
-        Assert.Equal(terminal.Height, handle.Height);
+        Assert.Equal(handle.Width, terminal.Width);
+        Assert.Equal(handle.Height, terminal.Height);
     }
 }
