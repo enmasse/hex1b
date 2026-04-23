@@ -393,7 +393,11 @@ public sealed class TerminalWidgetHandle : ICellImpactAwarePresentationAdapter, 
         // Prefer the terminal's authoritative buffer when available
         if (_terminal is { } terminal)
         {
-            var (buffer, _, _, _, _) = terminal.GetScreenBufferSnapshot();
+            var (buffer, width, height, cursorX, cursorY) = terminal.GetScreenBufferSnapshot();
+            _width = width;
+            _height = height;
+            _cursorX = cursorX;
+            _cursorY = cursorY;
             return buffer;
         }
         
@@ -426,6 +430,8 @@ public sealed class TerminalWidgetHandle : ICellImpactAwarePresentationAdapter, 
         if (_terminal is { } terminal)
         {
             var (buffer, width, height, cursorX, cursorY) = terminal.GetScreenBufferSnapshot();
+            _width = width;
+            _height = height;
             // Sync cursor position from the terminal's authoritative state
             _cursorX = cursorX;
             _cursorY = cursorY;

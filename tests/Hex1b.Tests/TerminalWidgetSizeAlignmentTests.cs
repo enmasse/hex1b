@@ -278,4 +278,32 @@ public class TerminalWidgetSizeAlignmentTests
         cts.Cancel();
         await terminal.DisposeAsync();
     }
+
+    [Fact]
+    public async Task GetScreenBuffer_WhenTerminalAttached_SynchronizesHandleDimensions()
+    {
+        await using var terminal = Hex1bTerminal.CreateBuilder()
+            .WithDimensions(80, 24)
+            .WithDiagnosticShell()
+            .WithTerminalWidget(out var handle)
+            .Build();
+
+        var widthField = typeof(TerminalWidgetHandle).GetField("_width",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var heightField = typeof(TerminalWidgetHandle).GetField("_height",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+
+        Assert.NotNull(widthField);
+        Assert.NotNull(heightField);
+
+        widthField!.SetValue(handle, 1);
+        heightField!.SetValue(handle, 1);
+
+        var buffer = handle.GetScreenBuffer();
+
+        Assert.Equal(buffer.GetLength(1), handle.Width);
+        Assert.Equal(buffer.GetLength(0), handle.Height);
+        Assert.Equal(terminal.Width, handle.Width);
+        Assert.Equal(terminal.Height, handle.Height);
+    }
 }

@@ -293,16 +293,9 @@ public class TerminalResizeTimingTests
     
     private static bool HasNonEmptyContent(TerminalCell[,] buffer, int height, int width)
     {
-        var bufferHeight = buffer.GetLength(0);
-        var bufferWidth = buffer.GetLength(1);
-        // Handle dimensions can change concurrently with screen-buffer reads, so
-        // clamp to the captured buffer bounds to avoid transient out-of-range access.
-        var scanHeight = Math.Min(height, bufferHeight);
-        var scanWidth = Math.Min(width, bufferWidth);
-
-        for (int y = 0; y < scanHeight; y++)
+        for (int y = 0; y < height; y++)
         {
-            for (int x = 0; x < scanWidth; x++)
+            for (int x = 0; x < width; x++)
             {
                 if (!string.IsNullOrWhiteSpace(buffer[y, x].Character))
                 {
