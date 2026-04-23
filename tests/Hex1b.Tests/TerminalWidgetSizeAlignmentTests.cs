@@ -282,22 +282,14 @@ public class TerminalWidgetSizeAlignmentTests
     [Fact]
     public async Task GetScreenBuffer_WhenTerminalAttached_SynchronizesHandleDimensions()
     {
+        var handle = new TerminalWidgetHandle(1, 1);
+
         await using var terminal = Hex1bTerminal.CreateBuilder()
             .WithDimensions(80, 24)
             .WithDiagnosticShell()
-            .WithTerminalWidget(out var handle)
             .Build();
 
-        var widthField = typeof(TerminalWidgetHandle).GetField("_width",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-        var heightField = typeof(TerminalWidgetHandle).GetField("_height",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-
-        Assert.NotNull(widthField);
-        Assert.NotNull(heightField);
-
-        widthField!.SetValue(handle, 1);
-        heightField!.SetValue(handle, 1);
+        ((ITerminalLifecycleAwarePresentationAdapter)handle).TerminalCreated(terminal);
 
         var buffer = handle.GetScreenBuffer();
 
