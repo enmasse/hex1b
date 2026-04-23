@@ -293,8 +293,8 @@ public class TerminalWidgetSizeAlignmentTests
 
         var buffer = handle.GetScreenBuffer();
 
-        Assert.Equal(buffer.GetLength(1), handle.Width);
         Assert.Equal(buffer.GetLength(0), handle.Height);
+        Assert.Equal(buffer.GetLength(1), handle.Width);
         Assert.Equal(terminal.Width, handle.Width);
         Assert.Equal(terminal.Height, handle.Height);
     }
