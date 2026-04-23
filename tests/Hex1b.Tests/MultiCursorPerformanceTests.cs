@@ -323,9 +323,14 @@ public class MultiCursorPerformanceTests
     }
 
     private static double GetSingleKeystrokeThresholdMs() =>
-        OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("CI") is not null
+        OperatingSystem.IsWindows() && IsCiEnvironment()
             ? WindowsCiSingleKeystrokeThresholdMs
             : DefaultSingleKeystrokeThresholdMs;
+
+    private static bool IsCiEnvironment() =>
+        !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CI")) ||
+        !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("GITHUB_ACTIONS")) ||
+        !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("TF_BUILD"));
 
     [Fact]
     public void SingleKeystroke_DoesNotRebuildFullText()
