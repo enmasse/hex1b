@@ -435,7 +435,7 @@ public sealed class TerminalWidgetHandle : ICellImpactAwarePresentationAdapter, 
             var (buffer, width, height, cursorX, cursorY) = terminal.GetScreenBufferSnapshot();
             _width = width;
             _height = height;
-            // Sync cursor position from the terminal's authoritative state
+            // Sync dimensions and cursor position from the terminal's authoritative state
             _cursorX = cursorX;
             _cursorY = cursorY;
             return (buffer, width, height);
