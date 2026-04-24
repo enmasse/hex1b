@@ -88,6 +88,14 @@ public sealed class TerminalWidgetHandle : ICellImpactAwarePresentationAdapter, 
     private TerminalState _state = TerminalState.NotStarted;
     private int? _exitCode;
     
+    // Copy mode state: when active, output is queued instead of applied
+    private bool _inCopyMode;
+    private TerminalSelection? _selection;
+    private List<IReadOnlyList<AppliedToken>>? _outputQueue;
+    
+    // Scrollback offset tracked by the TerminalNode, synced here for mouse coordinate translation
+    private int _scrollbackOffset;
+    
     /// <summary>
     /// Creates a new TerminalWidgetHandle with the specified dimensions.
     /// </summary>
@@ -161,6 +169,61 @@ public sealed class TerminalWidgetHandle : ICellImpactAwarePresentationAdapter, 
     /// Gets whether the terminal is currently running.
     /// </summary>
     public bool IsRunning => _state == TerminalState.Running;
+    
+    /// <summary>
+    /// Gets whether copy mode is currently active. When active, output from the child
+    /// process is queued rather than applied to the screen buffer, and the selection
+    /// cursor can be navigated independently.
+    /// </summary>
+    public bool IsInCopyMode => _inCopyMode;
+    
+    /// <summary>
+    /// Gets the current text selection, or null if copy mode is not active.
+    /// </summary>
+    public TerminalSelection? Selection => _selection;
+    
+    /// <summary>
+    /// Raised when copy mode is entered or exited.
+    /// </summary>
+    public event Action<bool>? CopyModeChanged;
+    
+    /// <summary>
+    /// Gets the current copy mode state.
+    /// </summary>
+    public CopyModeState CopyModeState { get; private set; }
+    
+    /// <summary>
+    /// Updates <see cref="CopyModeState"/> based on current selection state.
+    /// Called by the copy mode helper after state changes.
+    /// </summary>
+    internal void UpdateCopyModeState()
+    {
+        CopyModeState = !_inCopyMode ? CopyModeState.Inactive
+            : _selection is { IsSelecting: true } sel ? sel.Mode switch
+            {
+                SelectionMode.Character => CopyModeState.CharacterSelection,
+                SelectionMode.Line => CopyModeState.LineSelection,
+                SelectionMode.Block => CopyModeState.BlockSelection,
+                _ => CopyModeState.Active
+            }
+            : CopyModeState.Active;
+    }
+    
+    /// <summary>
+    /// Gets or sets the current scrollback offset, synced from the TerminalNode.
+    /// Used for translating mouse coordinates to virtual buffer positions.
+    /// </summary>
+    public int CurrentScrollbackOffset
+    {
+        get => _scrollbackOffset;
+        set => _scrollbackOffset = value;
+    }
+    
+    /// <summary>
+    /// Raised when text is copied via copy mode. Subscribers should send the text
+    /// to the system clipboard (e.g., via OSC 52).
+    /// </summary>
+    public event Action<string>? TextCopied;
     
     /// <summary>
     /// Gets the current window title set by OSC 0 or OSC 2 sequences from the child process.
@@ -536,8 +599,34 @@ public sealed class TerminalWidgetHandle : ICellImpactAwarePresentationAdapter, 
         if (_disposed || appliedTokens.Count == 0) 
             return ValueTask.CompletedTask;
         
+        lock (_bufferLock)
+        {
+            if (_inCopyMode && _outputQueue != null)
+            {
+                // Queue output for later application — buffer is frozen during copy mode.
+                // Still process mode tokens (mouse tracking, alternate screen) immediately
+                // so state is correct when copy mode exits.
+                foreach (var applied in appliedTokens)
+                {
+                    if (applied.Token is PrivateModeToken pm)
+                        HandlePrivateModeToken(pm);
+                    else if (applied.Token is CursorShapeToken cst)
+                        HandleCursorShapeToken(cst);
+                    else if (applied.Token is OscToken osc)
+                        HandleOscToken(osc);
+                }
+                _outputQueue.Add(appliedTokens);
+                return ValueTask.CompletedTask;
+            }
+        }
+        
+        ApplyTokensToBuffer(appliedTokens);
+        return ValueTask.CompletedTask;
+    }
+    
+    private void ApplyTokensToBuffer(IReadOnlyList<AppliedToken> appliedTokens)
+    {
         int maxY = -1;
-        int droppedCount = 0;
         lock (_bufferLock)
         {
             foreach (var applied in appliedTokens)
@@ -549,16 +638,7 @@ public sealed class TerminalWidgetHandle : ICellImpactAwarePresentationAdapter, 
                 }
                 else if (applied.Token is CursorShapeToken cst)
                 {
-                    _cursorShape = cst.Shape switch
-                    {
-                        1 => CursorShape.BlinkingBlock,
-                        2 => CursorShape.SteadyBlock,
-                        3 => CursorShape.BlinkingUnderline,
-                        4 => CursorShape.SteadyUnderline,
-                        5 => CursorShape.BlinkingBar,
-                        6 => CursorShape.SteadyBar,
-                        _ => CursorShape.Default
-                    };
+                    HandleCursorShapeToken(cst);
                 }
                 else if (applied.Token is OscToken osc)
                 {
@@ -573,10 +653,6 @@ public sealed class TerminalWidgetHandle : ICellImpactAwarePresentationAdapter, 
                         _screenBuffer[impact.Y, impact.X] = impact.Cell;
                         if (impact.Y > maxY) maxY = impact.Y;
                     }
-                    else if (impact.Y >= _height)
-                    {
-                        droppedCount++;
-                    }
                 }
                 
                 // Update cursor position from the last token
@@ -586,13 +662,24 @@ public sealed class TerminalWidgetHandle : ICellImpactAwarePresentationAdapter, 
         }
         
         // Only notify bound nodes when there are actual cell changes
-        // Cursor-only updates don't require a full repaint - RenderCursor handles that
         if (maxY >= 0)
         {
             OutputReceived?.Invoke();
         }
-        
-        return ValueTask.CompletedTask;
+    }
+    
+    private void HandleCursorShapeToken(CursorShapeToken cst)
+    {
+        _cursorShape = cst.Shape switch
+        {
+            1 => CursorShape.BlinkingBlock,
+            2 => CursorShape.SteadyBlock,
+            3 => CursorShape.BlinkingUnderline,
+            4 => CursorShape.SteadyUnderline,
+            5 => CursorShape.BlinkingBar,
+            6 => CursorShape.SteadyBar,
+            _ => CursorShape.Default
+        };
     }
     
     /// <inheritdoc />
@@ -668,12 +755,438 @@ public sealed class TerminalWidgetHandle : ICellImpactAwarePresentationAdapter, 
         Resized?.Invoke(newWidth, newHeight);
     }
     
+    // === Copy Mode ===
+    
+    /// <summary>
+    /// Enters copy mode: freezes the screen buffer and begins queuing output.
+    /// The copy mode cursor starts at the bottom-right of the visible screen.
+    /// </summary>
+    public void EnterCopyMode()
+    {
+        lock (_bufferLock)
+        {
+            if (_inCopyMode) return;
+            
+            _inCopyMode = true;
+            _outputQueue = new List<IReadOnlyList<AppliedToken>>();
+            
+            // Position cursor at the terminal's current cursor position in virtual coordinates
+            int scrollbackCount = ScrollbackCount;
+            var initialPosition = new BufferPosition(scrollbackCount + _cursorY, _cursorX);
+            _selection = new TerminalSelection(initialPosition);
+        }
+        
+        CopyModeChanged?.Invoke(true);
+        OutputReceived?.Invoke(); // trigger re-render to show copy mode cursor
+    }
+    
+    /// <summary>
+    /// Exits copy mode: flushes all queued output to the screen buffer and clears the selection.
+    /// </summary>
+    public void ExitCopyMode()
+    {
+        StopDragScrollTimer();
+        List<IReadOnlyList<AppliedToken>>? pendingQueue;
+        
+        lock (_bufferLock)
+        {
+            if (!_inCopyMode) return;
+            
+            _inCopyMode = false;
+            _selection = null;
+            _scrollbackOffset = 0; // snap back to live view
+            pendingQueue = _outputQueue;
+            _outputQueue = null;
+        }
+        
+        // Flush queued output outside the lock
+        if (pendingQueue != null)
+        {
+            foreach (var tokens in pendingQueue)
+            {
+                // Re-enter the normal output path
+                ApplyTokensToBuffer(tokens);
+            }
+        }
+        
+        CopyModeChanged?.Invoke(false);
+        OutputReceived?.Invoke();
+    }
+    
+    /// <summary>
+    /// Copies the currently selected text and exits copy mode.
+    /// Raises <see cref="TextCopied"/> with the selected text.
+    /// </summary>
+    /// <returns>The selected text, or null if no selection is active.</returns>
+    public string? CopySelection()
+    {
+        string? text;
+        
+        lock (_bufferLock)
+        {
+            if (!_inCopyMode || _selection == null || !_selection.IsSelecting)
+            {
+                text = null;
+            }
+            else
+            {
+                text = _selection.ExtractText(GetVirtualCellUnlocked, _width);
+            }
+        }
+        
+        ExitCopyMode();
+        
+        if (text != null)
+        {
+            TextCopied?.Invoke(text);
+        }
+        
+        return text;
+    }
+    
+    /// <summary>
+    /// Raised when a key is pressed while in copy mode. The consumer handles the key
+    /// mapping (e.g., vi keys, arrow keys) and calls the appropriate navigation/selection
+    /// methods on this handle. The bool parameter should be set to true if the key was handled.
+    /// </summary>
+    public event Func<Hex1bEvent, bool>? CopyModeInput;
+    
+    /// <summary>
+    /// Invokes the <see cref="CopyModeInput"/> handler for the given input event.
+    /// Returns true if the event was handled by a subscriber.
+    /// </summary>
+    internal bool RaiseCopyModeInput(Hex1bEvent inputEvent)
+    {
+        return CopyModeInput?.Invoke(inputEvent) ?? false;
+    }
+    
+    /// <summary>
+    /// Moves the copy mode cursor by the specified row and column deltas.
+    /// Clamps to buffer bounds and scrolls the viewport to keep the cursor visible.
+    /// </summary>
+    public void MoveCopyModeCursor(int rowDelta, int colDelta)
+    {
+        if (_selection == null) return;
+        var pos = _selection.Cursor;
+        int maxRow = VirtualBufferHeight - 1;
+        int maxCol = _width - 1;
+        var newPos = new BufferPosition(
+            Math.Clamp(pos.Row + rowDelta, 0, maxRow),
+            Math.Clamp(pos.Column + colDelta, 0, maxCol));
+        _selection.MoveCursor(newPos);
+        EnsureCopyModeCursorVisible();
+        OutputReceived?.Invoke();
+    }
+    
+    /// <summary>
+    /// Moves the copy mode cursor to an absolute position.
+    /// Clamps to buffer bounds and scrolls the viewport to keep the cursor visible.
+    /// </summary>
+    public void SetCopyModeCursorPosition(int row, int column)
+    {
+        if (_selection == null) return;
+        int maxRow = VirtualBufferHeight - 1;
+        int maxCol = _width - 1;
+        _selection.MoveCursor(new BufferPosition(
+            Math.Clamp(row, 0, maxRow),
+            Math.Clamp(column, 0, maxCol)));
+        EnsureCopyModeCursorVisible();
+        OutputReceived?.Invoke();
+    }
+    
+    /// <summary>
+    /// Starts or toggles selection in the specified mode.
+    /// If already selecting in the same mode, clears the selection.
+    /// </summary>
+    public void StartOrToggleSelection(SelectionMode mode)
+    {
+        if (_selection == null) return;
+        if (_selection.IsSelecting && _selection.Mode == mode)
+            _selection.ClearSelection();
+        else if (_selection.IsSelecting)
+            _selection.ToggleMode(mode);
+        else
+            _selection.StartSelection(mode);
+        OutputReceived?.Invoke();
+    }
+    
+    /// <summary>
+    /// Moves the copy mode cursor forward to the next word boundary.
+    /// </summary>
+    public void MoveWordForward()
+    {
+        if (_selection == null) return;
+        var pos = _selection.Cursor;
+        int maxRow = VirtualBufferHeight - 1;
+        int row = pos.Row, col = pos.Column;
+        
+        // Skip current word (non-space characters)
+        while (row <= maxRow)
+        {
+            var cell = GetVirtualCell(row, col);
+            if (cell == null || string.IsNullOrWhiteSpace(cell.Value.Character)) break;
+            col++;
+            if (col >= _width) { col = 0; row++; }
+        }
+        // Skip whitespace
+        while (row <= maxRow)
+        {
+            var cell = GetVirtualCell(row, col);
+            if (cell == null) break;
+            if (!string.IsNullOrWhiteSpace(cell.Value.Character)) break;
+            col++;
+            if (col >= _width) { col = 0; row++; }
+        }
+        
+        _selection.MoveCursor(new BufferPosition(Math.Min(row, maxRow), col));
+        EnsureCopyModeCursorVisible();
+        OutputReceived?.Invoke();
+    }
+    
+    /// <summary>
+    /// Moves the copy mode cursor backward to the previous word boundary.
+    /// </summary>
+    public void MoveWordBackward()
+    {
+        if (_selection == null) return;
+        var pos = _selection.Cursor;
+        int row = pos.Row, col = pos.Column;
+        
+        col--;
+        if (col < 0) { col = _width - 1; row--; }
+        if (row < 0) { _selection.MoveCursor(new BufferPosition(0, 0)); OutputReceived?.Invoke(); return; }
+        
+        // Skip whitespace
+        while (row >= 0)
+        {
+            var cell = GetVirtualCell(row, col);
+            if (cell == null) break;
+            if (!string.IsNullOrWhiteSpace(cell.Value.Character)) break;
+            col--;
+            if (col < 0) { col = _width - 1; row--; }
+        }
+        // Skip word
+        while (row >= 0)
+        {
+            var cell = GetVirtualCell(row, col);
+            if (cell == null || string.IsNullOrWhiteSpace(cell.Value.Character)) { col++; break; }
+            col--;
+            if (col < 0) { col = _width - 1; row--; }
+        }
+        
+        _selection.MoveCursor(new BufferPosition(Math.Max(row, 0), Math.Clamp(col, 0, _width - 1)));
+        EnsureCopyModeCursorVisible();
+        OutputReceived?.Invoke();
+    }
+    
+    /// <summary>
+    /// Adjusts the scrollback offset so the copy mode cursor is within the visible viewport.
+    /// </summary>
+    private void EnsureCopyModeCursorVisible()
+    {
+        if (_selection == null) return;
+        int cursorRow = _selection.Cursor.Row;
+        int scrollbackCount = ScrollbackCount;
+        
+        // Visible virtual row range: [viewStart, viewStart + _height - 1]
+        int viewStart = scrollbackCount - _scrollbackOffset;
+        int viewEnd = viewStart + _height - 1;
+        
+        if (cursorRow < viewStart)
+        {
+            _scrollbackOffset = scrollbackCount - cursorRow;
+        }
+        else if (cursorRow > viewEnd)
+        {
+            _scrollbackOffset = scrollbackCount - (cursorRow - _height + 1);
+        }
+        _scrollbackOffset = Math.Max(0, _scrollbackOffset);
+    }
+    
+    // Pending mouse selection anchor — set on Down, used on first Drag
+    private BufferPosition? _pendingMouseAnchor;
+    
+    // Auto-scroll timer for drag-outside-bounds
+    private Timer? _dragScrollTimer;
+    private int _dragScrollDirection; // -1 = up, +1 = down, 0 = none
+    private int _dragLastColumn;
+    private SelectionMode _dragLastMode;
+    
+    /// <summary>
+    /// Handles mouse-driven selection. Translates local terminal coordinates to virtual
+    /// buffer positions and manages the selection state machine (down/drag/up).
+    /// Only enters copy mode when the user actually drags (not on a single click).
+    /// When dragging outside the viewport, auto-scrolls every 500ms.
+    /// </summary>
+    /// <param name="localX">X coordinate relative to the terminal widget bounds.</param>
+    /// <param name="localY">Y coordinate relative to the terminal widget bounds.</param>
+    /// <param name="action">The mouse action (Down records anchor, Drag starts selection, Up finalizes).</param>
+    /// <param name="mode">The selection mode to use.</param>
+    public void MouseSelect(int localX, int localY, Input.MouseAction action, SelectionMode mode)
+    {
+        int scrollbackCount = ScrollbackCount;
+        int virtualRow = scrollbackCount - _scrollbackOffset + localY;
+        int column = Math.Clamp(localX, 0, _width - 1);
+        virtualRow = Math.Clamp(virtualRow, 0, VirtualBufferHeight - 1);
+        
+        switch (action)
+        {
+            case Input.MouseAction.Down:
+                // Record anchor position — don't enter copy mode yet (wait for drag)
+                _pendingMouseAnchor = new BufferPosition(virtualRow, column);
+                StopDragScrollTimer();
+                break;
+                
+            case Input.MouseAction.Drag:
+                if (_pendingMouseAnchor is { } anchor)
+                {
+                    // First drag after mouse down — now enter copy mode and start selection
+                    if (!_inCopyMode)
+                    {
+                        EnterCopyMode();
+                    }
+                    _selection?.MoveCursor(anchor);
+                    _selection?.StartSelection(mode);
+                    _pendingMouseAnchor = null;
+                }
+                
+                if (_selection != null && _inCopyMode)
+                {
+                    // If selection mode changed (modifier changed mid-drag), update it
+                    if (_selection.IsSelecting && _selection.Mode != mode)
+                    {
+                        _selection.ToggleMode(mode);
+                    }
+                    _selection.MoveCursor(new BufferPosition(virtualRow, column));
+                    EnsureCopyModeCursorVisible();
+                    OutputReceived?.Invoke();
+                    
+                    // Start/stop auto-scroll timer based on whether mouse is out of bounds
+                    if (localY < 0)
+                    {
+                        StartDragScrollTimer(-1, column, mode);
+                    }
+                    else if (localY >= _height)
+                    {
+                        StartDragScrollTimer(1, column, mode);
+                    }
+                    else
+                    {
+                        StopDragScrollTimer();
+                    }
+                }
+                break;
+                
+            case Input.MouseAction.Up:
+                _pendingMouseAnchor = null;
+                StopDragScrollTimer();
+                // Selection stays active — user can refine with keyboard or press y to copy
+                OutputReceived?.Invoke();
+                break;
+        }
+    }
+    
+    private void StartDragScrollTimer(int direction, int column, SelectionMode mode)
+    {
+        _dragScrollDirection = direction;
+        _dragLastColumn = column;
+        _dragLastMode = mode;
+        
+        if (_dragScrollTimer == null)
+        {
+            _dragScrollTimer = new Timer(DragScrollTick, null, 100, 100);
+        }
+    }
+    
+    private void StopDragScrollTimer()
+    {
+        _dragScrollTimer?.Dispose();
+        _dragScrollTimer = null;
+        _dragScrollDirection = 0;
+    }
+    
+    private void DragScrollTick(object? state)
+    {
+        if (!_inCopyMode || _selection == null || _dragScrollDirection == 0) 
+        {
+            StopDragScrollTimer();
+            return;
+        }
+        
+        // Move cursor one row in the scroll direction
+        var pos = _selection.Cursor;
+        int newRow = Math.Clamp(pos.Row + _dragScrollDirection, 0, VirtualBufferHeight - 1);
+        _selection.MoveCursor(new BufferPosition(newRow, _dragLastColumn));
+        EnsureCopyModeCursorVisible();
+        OutputReceived?.Invoke();
+    }
+    
+    /// <summary>
+    /// Gets the copy mode cursor position in virtual buffer coordinates, or null if not in copy mode.
+    /// </summary>
+    public BufferPosition? CopyModeCursorPosition
+    {
+        get
+        {
+            lock (_bufferLock)
+            {
+                return _selection?.Cursor;
+            }
+        }
+    }
+    
+    /// <summary>
+    /// Gets a cell from the virtual buffer (scrollback + screen unified view).
+    /// Virtual row 0 is the oldest scrollback row; scrollbackCount+screenHeight-1 is the last screen row.
+    /// </summary>
+    /// <param name="virtualRow">The virtual row index.</param>
+    /// <param name="column">The column index.</param>
+    /// <returns>The cell at that position, or null if out of bounds.</returns>
+    public TerminalCell? GetVirtualCell(int virtualRow, int column)
+    {
+        lock (_bufferLock)
+        {
+            return GetVirtualCellUnlocked(virtualRow, column);
+        }
+    }
+    
+    private TerminalCell? GetVirtualCellUnlocked(int virtualRow, int column)
+    {
+        int scrollbackCount = ScrollbackCount;
+        
+        if (virtualRow < 0) return null;
+        if (column < 0 || column >= _width) return null;
+        
+        if (virtualRow < scrollbackCount)
+        {
+            // Scrollback region
+            var rows = _terminal?.GetScrollbackRows(scrollbackCount);
+            if (rows == null || virtualRow >= rows.Length) return null;
+            var cells = rows[virtualRow].Cells;
+            if (column >= cells.Length) return TerminalCell.Empty;
+            return cells[column];
+        }
+        else
+        {
+            // Screen region
+            int screenRow = virtualRow - scrollbackCount;
+            if (screenRow >= _height) return null;
+            return _screenBuffer[screenRow, column];
+        }
+    }
+    
+    /// <summary>
+    /// Gets the total number of rows in the virtual buffer (scrollback + screen).
+    /// </summary>
+    public int VirtualBufferHeight => ScrollbackCount + _height;
+    
     /// <inheritdoc />
     public ValueTask DisposeAsync()
     {
         if (_disposed) return ValueTask.CompletedTask;
         _disposed = true;
         
+        StopDragScrollTimer();
         Disconnected?.Invoke();
         _disconnected.TrySetResult();
         
