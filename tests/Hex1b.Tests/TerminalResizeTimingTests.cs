@@ -236,14 +236,15 @@ public class TerminalResizeTimingTests
             .WithTerminalWidget(out var handle2)
             .Build();
         
-        // Create nodes for each
+        // Create a shared node and a TCS-based invalidate signal so we can
+        // reliably wait for invalidation rather than relying on a boolean flag.
         var node = new TerminalNode();
-        bool invalidateCalled = false;
-        node.SetInvalidateCallback(() => invalidateCalled = true);
+        var invalidateSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        node.SetInvalidateCallback(() => invalidateSignal.TrySetResult());
         
         // Act - Start first terminal and bind node to it
         var runTask1 = Task.Run(() => terminal1.RunAsync(TestContext.Current.CancellationToken));
-        var runTask2 = Task.CompletedTask;
+        Task<int> runTask2 = Task.FromResult(0);
         try
         {
             node.Handle = handle1;
@@ -256,14 +257,22 @@ public class TerminalResizeTimingTests
             bool terminal1HasContent = HasNonEmptyContent(buffer1, handle1.Height, handle1.Width);
             Assert.True(terminal1HasContent, "First terminal should have content");
             
-            // Now switch to second terminal (simulates what reconciliation does)
+            // Unbind from the first terminal before switching.
             node.Unbind();
-            
+
+            // Fully stop terminal1 before starting terminal2. Running two Windows PTY shim
+            // processes (hex1bpty.exe) simultaneously on CI can cause the second shim to
+            // fail to connect within its startup window due to resource contention.
+            await terminal1.DisposeAsync();
+            await AwaitTerminalRunTaskAsync(runTask1);
+            runTask1 = Task.FromResult(0);
+
             // Start second terminal
             runTask2 = Task.Run(() => terminal2.RunAsync(TestContext.Current.CancellationToken));
             
-            // Bind to second terminal
-            invalidateCalled = false;
+            // Reset the invalidate signal and bind the node to the second terminal.
+            invalidateSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            node.SetInvalidateCallback(() => invalidateSignal.TrySetResult());
             node.Handle = handle2;
             node.Bind();
             
@@ -271,15 +280,17 @@ public class TerminalResizeTimingTests
             node.Measure(new Constraints(0, 148, 0, 36));
             node.Arrange(new Rect(0, 0, 148, 36));
 
+            // Wait for the second terminal to reach Running state, then for content.
+            await WaitForTerminalStateAsync(handle2, TerminalState.Running, GetStartupTimeout(), TestContext.Current.CancellationToken);
             await WaitForTerminalContentAsync(handle2, GetStartupTimeout(), TestContext.Current.CancellationToken);
             
-            // Assert - Second terminal should have content
+            // Assert - Second terminal should have content and should have triggered invalidation
             var buffer2 = handle2.GetScreenBuffer();
             bool terminal2HasContent = HasNonEmptyContent(buffer2, handle2.Height, handle2.Width);
             
             Assert.True(terminal2HasContent, 
                 $"Second terminal should have content. State={handle2.State}, Width={handle2.Width}, Height={handle2.Height}");
-            Assert.True(invalidateCalled, "Invalidate should have been called for second terminal");
+            Assert.True(invalidateSignal.Task.IsCompleted, "Invalidate should have been called for second terminal");
         }
         finally
         {
