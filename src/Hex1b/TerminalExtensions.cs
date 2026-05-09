@@ -1,3 +1,4 @@
+using Hex1b.Theming;
 using Hex1b.Widgets;
 
 namespace Hex1b;
@@ -11,7 +12,7 @@ public static class TerminalExtensions
     /// Creates a TerminalWidget that displays the content of the specified terminal handle.
     /// </summary>
     /// <typeparam name="TParent">The parent widget type.</typeparam>
-    /// <param name="ctx">The widget context.</param>
+    /// <param name="context">The widget context.</param>
     /// <param name="handle">The terminal handle to display.</param>
     /// <returns>A new TerminalWidget bound to the handle.</returns>
     /// <example>
@@ -23,11 +24,11 @@ public static class TerminalExtensions
     /// 
     /// _ = terminal.RunAsync(appCt);
     /// 
-    /// ctx.Terminal(bashHandle);
+    /// context.Terminal(bashHandle);
     /// </code>
     /// </example>
     public static TerminalWidget Terminal<TParent>(
-        this WidgetContext<TParent> ctx,
+        this WidgetContext<TParent> context,
         TerminalWidgetHandle handle)
         where TParent : Hex1bWidget
         => new(handle);
@@ -53,8 +54,8 @@ public static class TerminalExtensions
     /// </remarks>
     /// <example>
     /// <code>
-    /// ctx.Terminal(bashHandle)
-    ///    .WhenNotRunning(args => ctx.VStack(v => [
+    /// context.Terminal(bashHandle)
+    ///    .WhenNotRunning(args => context.VStack(v => [
     ///        v.Text($"Terminal exited with code {args.ExitCode}"),
     ///        v.Button("Restart").OnClick(_ => RestartTerminal())
     ///    ]));
@@ -71,8 +72,78 @@ public static class TerminalExtensions
     /// <param name="widget">The TerminalWidget to configure.</param>
     /// <param name="rows">Number of rows per scroll tick. Defaults to 3.</param>
     /// <returns>The configured TerminalWidget.</returns>
-    public static TerminalWidget WithMouseWheelScrollAmount(
+    public static TerminalWidget MouseWheelScrollAmount(
         this TerminalWidget widget,
         int rows)
         => widget with { MouseWheelScrollAmount = rows };
+
+    /// <summary>
+    /// Sets the background colour for the terminal's framing area and for cells the
+    /// workload writes with the default background.
+    /// </summary>
+    /// <param name="widget">The TerminalWidget to configure.</param>
+    /// <param name="color">The background colour. Pass <see cref="Hex1bColor.Default"/> to
+    /// restore the transparent (inherits-from-parent) behaviour.</param>
+    /// <returns>The configured TerminalWidget.</returns>
+    /// <remarks>
+    /// <para>
+    /// Without this call, terminal cells with the default background are emitted as
+    /// transparent. When the terminal is embedded inside a coloured container (such as a
+    /// <see cref="Hex1b.Widgets.BackgroundPanelWidget"/>) the container's colour bleeds
+    /// through and the terminal cannot be visually distinguished from its surroundings.
+    /// Setting an explicit background gives the terminal its own opaque surface so the
+    /// surrounding container colour is visible only in the empty area around the terminal
+    /// — useful for "framed" embedded terminal experiences.
+    /// </para>
+    /// <para>
+    /// Cells with a non-default background written by the workload are unaffected and
+    /// continue to use the workload's colour.
+    /// </para>
+    /// </remarks>
+    /// <example>
+    /// <code>
+    /// // Frame the terminal with a panel colour, terminal itself stays opaque black.
+    /// var content = new BackgroundPanelWidget(
+    ///     panelColor,
+    ///     context.Align(Alignment.Center,
+    ///         context.Terminal(handle).Background(Hex1bColor.FromRgb(0x0d, 0x11, 0x17))
+    ///             .FixedWidth(80).FixedHeight(24)).Fill());
+    /// </code>
+    /// </example>
+    public static TerminalWidget Background(
+        this TerminalWidget widget,
+        Hex1bColor color)
+        => widget with { BackgroundColor = color };
+    
+    /// <summary>
+    /// Enables standard copy mode bindings with configurable key and mouse mappings.
+    /// Provides vi-style keyboard navigation, character/line/block selection,
+    /// and mouse drag-to-select with modifier keys.
+    /// </summary>
+    /// <param name="widget">The TerminalWidget to configure.</param>
+    /// <param name="configure">Optional callback to customize the default bindings.</param>
+    /// <returns>The configured TerminalWidget.</returns>
+    /// <example>
+    /// <description>Enable copy mode with default vi-style bindings:</description>
+    /// <code>
+    /// context.Terminal(handle).CopyModeBindings().Fill()
+    /// </code>
+    /// </example>
+    /// <example>
+    /// <description>Customize the entry key:</description>
+    /// <code>
+    /// context.Terminal(handle).CopyModeBindings(options =>
+    /// {
+    ///     options.EnterKeys = [Hex1bKey.F5];
+    /// }).Fill()
+    /// </code>
+    /// </example>
+    public static TerminalWidget CopyModeBindings(
+        this TerminalWidget widget,
+        Action<CopyModeBindingsOptions>? configure = null)
+    {
+        var options = new CopyModeBindingsOptions();
+        configure?.Invoke(options);
+        return widget with { CopyModeOptions = options };
+    }
 }

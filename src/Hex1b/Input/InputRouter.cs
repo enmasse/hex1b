@@ -303,23 +303,18 @@ public static class InputRouter
         var capturedNode = focusRing.CapturedNode;
         if (capturedNode != null)
         {
-            // Check if mouse is within the captured node's bounds
+            // Translate to local coordinates (allow negative/out-of-bounds for drag)
             var bounds = capturedNode.Bounds;
-            if (mouseEvent.X >= bounds.X && mouseEvent.X < bounds.X + bounds.Width &&
-                mouseEvent.Y >= bounds.Y && mouseEvent.Y < bounds.Y + bounds.Height)
+            var localEvent = mouseEvent with 
+            { 
+                X = mouseEvent.X - bounds.X, 
+                Y = mouseEvent.Y - bounds.Y 
+            };
+            
+            var result = capturedNode.HandleInput(localEvent);
+            if (result == InputResult.Handled)
             {
-                // Translate to local coordinates
-                var localEvent = mouseEvent with 
-                { 
-                    X = mouseEvent.X - bounds.X, 
-                    Y = mouseEvent.Y - bounds.Y 
-                };
-                
-                var result = capturedNode.HandleInput(localEvent);
-                if (result == InputResult.Handled)
-                {
-                    return Task.FromResult(InputResult.Handled);
-                }
+                return Task.FromResult(InputResult.Handled);
             }
         }
         
@@ -537,6 +532,30 @@ public static class InputRouter
         InputBindingActionContext actionContext,
         InputRouterState state)
     {
+        // If mid-chord from a previous capture-override prefix match, continue from there
+        if (state.CaptureOverrideChordNode is { } chordNode)
+        {
+            var chordResult = chordNode.Lookup(keyEvent);
+
+            if (chordResult.IsLeaf)
+            {
+                await chordResult.ExecuteAsync(actionContext);
+                state.Reset();
+                return InputResult.Handled;
+            }
+
+            if (chordResult.HasChildren)
+            {
+                // Deeper chord — keep going
+                state.CaptureOverrideChordNode = chordResult.Node;
+                return InputResult.Handled;
+            }
+
+            // Second key didn't match any continuation — cancel the chord
+            state.Reset();
+            return InputResult.NotHandled;
+        }
+
         // Collect all capture-override bindings from the entire tree
         var overrideBindings = new List<InputBinding>();
         CollectCaptureOverrideBindings(root, overrideBindings);
@@ -562,7 +581,10 @@ public static class InputRouter
             
             if (result.HasChildren)
             {
-                // Override chord started - treat as handled
+                // Override chord started - save state so the next keypress
+                // continues the chord through TryHandleCaptureOverrideBindingsAsync.
+                state.CaptureOverrideChordNode = result.Node;
+                state.NotifyChordStateChanged();
                 return InputResult.Handled;
             }
         }

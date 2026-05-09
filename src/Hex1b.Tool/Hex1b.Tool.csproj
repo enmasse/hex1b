@@ -40,6 +40,16 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
+  <PropertyGroup>
+    <!--
+      CI packs the tool against a freshly built Hex1b package so dotnet tool/dnx restore
+      sees the same RID-specific assets that end users get from NuGet. Local builds keep
+      the project reference for inner-loop development.
+    -->
+    <UseHex1bPackageReference Condition="'$(UseHex1bPackageReference)' == ''">false</UseHex1bPackageReference>
+    <Hex1bPackageVersion Condition="'$(Hex1bPackageVersion)' == '' and '$(PackageVersion)' != ''">$(PackageVersion)</Hex1bPackageVersion>
+  </PropertyGroup>
+
   <ItemGroup>
     <InternalsVisibleTo Include="Hex1b.Tool.Tests" />
   </ItemGroup>
@@ -60,31 +70,14 @@
     <PackageReference Include="System.CommandLine" Version="2.0.2" />
   </ItemGroup>
 
-  <ItemGroup>
-    <ProjectReference Include="../Hex1b/Hex1b.csproj" />
+  <!-- Use the packed Hex1b package when validating the published tool layout in CI. -->
+  <ItemGroup Condition="'$(UseHex1bPackageReference)' == 'true'">
+    <PackageReference Include="Hex1b" Version="$(Hex1bPackageVersion)" />
   </ItemGroup>
 
-  <ItemGroup>
-    <None Include="..\Hex1b\runtimes\win-x64\native\hex1bpty.exe"
-          Pack="true"
-          Visible="false"
-          Condition="Exists('..\Hex1b\runtimes\win-x64\native\hex1bpty.exe')"
-          PackagePath="tools\$(TargetFramework)\any\runtimes\win-x64\native\hex1bpty.exe" />
-    <None Include="..\Hex1b\obj\windows-pty-shim\win-x64\native\hex1bpty.exe"
-          Pack="true"
-          Visible="false"
-          Condition="!Exists('..\Hex1b\runtimes\win-x64\native\hex1bpty.exe') and Exists('..\Hex1b\obj\windows-pty-shim\win-x64\native\hex1bpty.exe')"
-          PackagePath="tools\$(TargetFramework)\any\runtimes\win-x64\native\hex1bpty.exe" />
-    <None Include="..\Hex1b\runtimes\win-arm64\native\hex1bpty.exe"
-          Pack="true"
-          Visible="false"
-          Condition="Exists('..\Hex1b\runtimes\win-arm64\native\hex1bpty.exe')"
-          PackagePath="tools\$(TargetFramework)\any\runtimes\win-arm64\native\hex1bpty.exe" />
-    <None Include="..\Hex1b\obj\windows-pty-shim\win-arm64\native\hex1bpty.exe"
-          Pack="true"
-          Visible="false"
-          Condition="!Exists('..\Hex1b\runtimes\win-arm64\native\hex1bpty.exe') and Exists('..\Hex1b\obj\windows-pty-shim\win-arm64\native\hex1bpty.exe')"
-          PackagePath="tools\$(TargetFramework)\any\runtimes\win-arm64\native\hex1bpty.exe" />
+  <!-- Keep local development on a project reference so changes flow through without packing. -->
+  <ItemGroup Condition="'$(UseHex1bPackageReference)' != 'true'">
+    <ProjectReference Include="../Hex1b/Hex1b.csproj" />
   </ItemGroup>
 
   <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
@@ -94,7 +87,7 @@
 
   <Target Name="CopyWindowsPtyShim"
           AfterTargets="Build"
-          Condition="$([MSBuild]::IsOSPlatform('Windows')) and Exists('../Hex1b/obj/windows-pty-shim/$(WindowsPtyShimRid)/native/hex1bpty.exe')">
+          Condition="'$(UseHex1bPackageReference)' != 'true' and $([MSBuild]::IsOSPlatform('Windows')) and Exists('../Hex1b/obj/windows-pty-shim/$(WindowsPtyShimRid)/native/hex1bpty.exe')">
     <ItemGroup>
       <WindowsPtyShimFiles Include="../Hex1b/obj/windows-pty-shim/$(WindowsPtyShimRid)/native/*.*"
                            Exclude="../Hex1b/obj/windows-pty-shim/$(WindowsPtyShimRid)/native/*.pdb" />

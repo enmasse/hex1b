@@ -7,8 +7,8 @@ namespace Hex1b.Tests;
 /// Tests that encode the input binding precedence rules:
 /// 
 /// BINDING SCOPE (determined by widget type):
-/// - Non-focusable widget + WithInputBindings → Global bindings
-/// - Focusable widget + WithInputBindings → Focus bindings
+/// - Non-focusable widget + InputBindings → Global bindings
+/// - Focusable widget + InputBindings → Focus bindings
 /// 
 /// GLOBAL BINDINGS:
 /// - Collected from all non-focusable widgets during reconciliation
@@ -50,7 +50,7 @@ public class InputBindingPrecedenceTests
         using var app = new Hex1bApp(
             ctx => ctx.VStack(v => [
                 v.Test().OnRender(_ => renderOccurred.TrySetResult())
-            ]).WithInputBindings(b =>
+            ]).InputBindings(b =>
             {
                 b.Key(Hex1bKey.X).Action(_ =>
                 {
@@ -91,7 +91,7 @@ public class InputBindingPrecedenceTests
         using var app = new Hex1bApp(
             ctx => ctx.VStack(v => [
                 v.Test().OnRender(_ => renderOccurred.TrySetResult())
-            ]).WithInputBindings(b =>
+            ]).InputBindings(b =>
             {
                 b.Key(Hex1bKey.X).Action(_ =>
                 {
@@ -134,7 +134,7 @@ public class InputBindingPrecedenceTests
             ctx => ctx.VStack(outer => [
                 outer.VStack(inner => [
                     inner.Test().OnRender(_ => renderOccurred.TrySetResult())
-                ]).WithInputBindings(b =>
+                ]).InputBindings(b =>
                 {
                     b.Key(Hex1bKey.X).Action(_ =>
                     {
@@ -142,7 +142,7 @@ public class InputBindingPrecedenceTests
                         return Task.CompletedTask;
                     }, "Child X");
                 })
-            ]).WithInputBindings(b =>
+            ]).InputBindings(b =>
             {
                 b.Key(Hex1bKey.X).Action(_ =>
                 {
@@ -187,7 +187,7 @@ public class InputBindingPrecedenceTests
 
         using var app = new Hex1bApp(
             ctx => ctx.VStack(v => [
-                v.Button("Test").WithInputBindings(b =>
+                v.Button("Test").InputBindings(b =>
                 {
                     b.Key(Hex1bKey.X).Action(_ =>
                     {
@@ -270,7 +270,7 @@ public class InputBindingPrecedenceTests
             ctx => ctx.VStack(v => [
                 v.Button("Test"),
                 v.Test().OnRender(_ => renderOccurred.TrySetResult())
-            ]).WithInputBindings(b =>
+            ]).InputBindings(b =>
             {
                 b.Key(Hex1bKey.Q).Action(_ =>
                 {
@@ -317,7 +317,7 @@ public class InputBindingPrecedenceTests
 
         using var app = new Hex1bApp(
             ctx => ctx.VStack(v => [
-                v.Button("Test").WithInputBindings(b =>
+                v.Button("Test").InputBindings(b =>
                 {
                     b.Key(Hex1bKey.X).Action(_ =>
                     {
@@ -326,7 +326,7 @@ public class InputBindingPrecedenceTests
                     }, "Focus X");
                 }),
                 v.Test().OnRender(_ => renderOccurred.TrySetResult())
-            ]).WithInputBindings(b =>
+            ]).InputBindings(b =>
             {
                 b.Key(Hex1bKey.X).Action(_ =>
                 {
@@ -369,7 +369,7 @@ public class InputBindingPrecedenceTests
 
         using var app = new Hex1bApp(
             ctx => ctx.VStack(v => [
-                v.Button("Button1").WithInputBindings(b =>
+                v.Button("Button1").InputBindings(b =>
                 {
                     b.Key(Hex1bKey.X).Action(_ =>
                     {
@@ -379,7 +379,7 @@ public class InputBindingPrecedenceTests
                 }),
                 v.Button("Button2"),
                 v.Test().OnRender(_ => renderOccurred.TrySetResult())
-            ]).WithInputBindings(b =>
+            ]).InputBindings(b =>
             {
                 b.Key(Hex1bKey.X).Action(_ =>
                 {
@@ -432,7 +432,7 @@ public class InputBindingPrecedenceTests
             ctx => ctx.VStack(outer => [
                 outer.VStack(inner => [
                     inner.Test().OnRender(_ => renderOccurred.TrySetResult())
-                ]).WithInputBindings(b =>
+                ]).InputBindings(b =>
                 {
                     b.Key(Hex1bKey.X).Action(_ =>
                     {
@@ -440,7 +440,7 @@ public class InputBindingPrecedenceTests
                         return Task.CompletedTask;
                     }, "Inner X");
                 })
-            ]).WithInputBindings(b =>
+            ]).InputBindings(b =>
             {
                 b.Key(Hex1bKey.X).Action(_ =>
                 {
@@ -485,7 +485,7 @@ public class InputBindingPrecedenceTests
                 root.VStack(middle => [
                     middle.VStack(deep => [
                         deep.Test().OnRender(_ => renderOccurred.TrySetResult())
-                    ]).WithInputBindings(b =>
+                    ]).InputBindings(b =>
                     {
                         b.Key(Hex1bKey.X).Action(_ =>
                         {
@@ -494,7 +494,7 @@ public class InputBindingPrecedenceTests
                         }, "Deep X");
                     })
                 ])
-            ]).WithInputBindings(b =>
+            ]).InputBindings(b =>
             {
                 b.Key(Hex1bKey.X).Action(_ =>
                 {
@@ -573,7 +573,7 @@ public class InputBindingPrecedenceTests
         using var app = new Hex1bApp(
             ctx => ctx.VStack(v => [
                 v.Test().OnRender(_ => renderOccurred.TrySetResult())
-            ]).WithInputBindings(b =>
+            ]).InputBindings(b =>
             {
                 b.Ctrl().Key(Hex1bKey.C).Action(_ =>
                 {
@@ -619,7 +619,7 @@ public class InputBindingPrecedenceTests
 
         using var app = new Hex1bApp(
             ctx => ctx.VStack(v => [
-                v.Button("Test").WithInputBindings(b =>
+                v.Button("Test").InputBindings(b =>
                 {
                     b.Key(Hex1bKey.G).Then().Key(Hex1bKey.G).Action(_ =>
                     {
@@ -666,7 +666,7 @@ public class InputBindingPrecedenceTests
         using var app = new Hex1bApp(
             ctx => ctx.VStack(v => [
                 v.Test().OnRender(_ => renderOccurred.TrySetResult())
-            ]).WithInputBindings(b =>
+            ]).InputBindings(b =>
             {
                 b.Key(Hex1bKey.G).Then().Key(Hex1bKey.G).Action(_ =>
                 {
@@ -711,7 +711,7 @@ public class InputBindingPrecedenceTests
         using var app = new Hex1bApp(
             ctx => ctx.VStack(v => [
                 v.Test().OnRender(_ => renderOccurred.TrySetResult())
-            ]).WithInputBindings(b =>
+            ]).InputBindings(b =>
             {
                 b.Key(Hex1bKey.G).Then().Key(Hex1bKey.G).Action(_ =>
                 {
@@ -744,9 +744,9 @@ public class InputBindingPrecedenceTests
     #region H. API Behavior
 
     [Fact]
-    public async Task H1_WithInputBindings_OnNonFocusable_CreatesGlobalBindings()
+    public async Task H1_InputBindings_OnNonFocusable_CreatesGlobalBindings()
     {
-        // RULE: WithInputBindings on non-focusable widget creates global bindings.
+        // RULE: InputBindings on non-focusable widget creates global bindings.
         // SETUP: VStack (non-focusable) with binding for 'X'
         // ACTION: No focus exists, press 'X'
         // EXPECTED: Binding fires (it's global)
@@ -761,7 +761,7 @@ public class InputBindingPrecedenceTests
         using var app = new Hex1bApp(
             ctx => ctx.VStack(v => [
                 v.Test().OnRender(_ => renderOccurred.TrySetResult())
-            ]).WithInputBindings(b =>
+            ]).InputBindings(b =>
             {
                 b.Key(Hex1bKey.X).Action(_ =>
                 {
@@ -785,9 +785,9 @@ public class InputBindingPrecedenceTests
     }
 
     [Fact]
-    public async Task H2_WithInputBindings_OnFocusable_CreatesFocusBindings()
+    public async Task H2_InputBindings_OnFocusable_CreatesFocusBindings()
     {
-        // RULE: WithInputBindings on focusable widget creates focus bindings.
+        // RULE: InputBindings on focusable widget creates focus bindings.
         // SETUP: Button with binding for 'X', Button2 with no bindings
         // ACTION: Focus Button2, press 'X'
         // EXPECTED: Button1's binding does NOT fire (focus bindings only when focused)
@@ -801,7 +801,7 @@ public class InputBindingPrecedenceTests
 
         using var app = new Hex1bApp(
             ctx => ctx.VStack(v => [
-                v.Button("Button1").WithInputBindings(b =>
+                v.Button("Button1").InputBindings(b =>
                 {
                     b.Key(Hex1bKey.X).Action(_ =>
                     {
@@ -854,7 +854,7 @@ public class InputBindingPrecedenceTests
         using var app = new Hex1bApp(
             ctx => ctx.VStack(v => [
                 v.Test().OnRender(_ => renderOccurred.TrySetResult())
-            ]).WithInputBindings(b =>
+            ]).InputBindings(b =>
             {
                 b.Key(Hex1bKey.X).Action(_ =>
                 {
@@ -904,7 +904,7 @@ public class InputBindingPrecedenceTests
         using var app = new Hex1bApp(
             ctx => ctx.VStack(v => [
                 v.Test().OnRender(_ => renderOccurred.TrySetResult())
-            ]).WithInputBindings(b =>
+            ]).InputBindings(b =>
             {
                 b.Ctrl().Key(Hex1bKey.X).Action(_ =>
                 {
@@ -945,7 +945,7 @@ public class InputBindingPrecedenceTests
 
         using var app = new Hex1bApp(
             ctx => ctx.VStack(v => [
-                v.Button("Test").WithInputBindings(b =>
+                v.Button("Test").InputBindings(b =>
                 {
                     b.Ctrl().Key(Hex1bKey.S).Action(_ =>
                     {
@@ -954,7 +954,7 @@ public class InputBindingPrecedenceTests
                     }, "Focus Ctrl+S");
                 }),
                 v.Test().OnRender(_ => renderOccurred.TrySetResult())
-            ]).WithInputBindings(b =>
+            ]).InputBindings(b =>
             {
                 b.Ctrl().Key(Hex1bKey.S).Action(_ =>
                 {
@@ -1001,7 +1001,7 @@ public class InputBindingPrecedenceTests
         using var app = new Hex1bApp(
             ctx => ctx.VStack(v => [
                 v.Test().OnRender(_ => renderOccurred.TrySetResult())
-            ]).WithInputBindings(b =>
+            ]).InputBindings(b =>
             {
                 b.Shift().Key(Hex1bKey.Tab).Action(_ =>
                 {
@@ -1026,40 +1026,78 @@ public class InputBindingPrecedenceTests
 
     #endregion
 
-    #region Modifier Validation Tests
+    #region Modifier Combination Tests
 
     [Fact]
-    public void ModifierValidation_CtrlThenShift_ThrowsException()
+    public void ModifierBuilder_CtrlThenShift_ProducesCombinedModifiers()
     {
-        // RULE: Cannot combine Ctrl and Shift modifiers.
-        // SETUP: Try to create Ctrl+Shift binding
-        // EXPECTED: InvalidOperationException is thrown
-        
+        // RULE: Ctrl and Shift modifiers can be combined.
+        // SETUP: Build a Ctrl+Shift+LeftArrow binding via the fluent API.
+        // EXPECTED: The resulting step carries both Control and Shift flags.
+
         var builder = new InputBindingsBuilder();
-        
-        var ex = Assert.Throws<InvalidOperationException>(() =>
-        {
-            builder.Ctrl().Shift();
-        });
-        
-        Assert.Contains("Cannot combine Ctrl and Shift", ex.Message);
+        builder.Ctrl().Shift().Key(Hex1bKey.LeftArrow).Action(() => { });
+
+        var binding = Assert.Single(builder.Bindings);
+        var step = Assert.Single(binding.Steps);
+        Assert.Equal(Hex1bKey.LeftArrow, step.Key);
+        Assert.Equal(Hex1bModifiers.Control | Hex1bModifiers.Shift, step.Modifiers);
     }
 
     [Fact]
-    public void ModifierValidation_ShiftThenCtrl_ThrowsException()
+    public void ModifierBuilder_ShiftThenCtrl_ProducesCombinedModifiers()
     {
-        // RULE: Cannot combine Ctrl and Shift modifiers.
-        // SETUP: Try to create Shift+Ctrl binding
-        // EXPECTED: InvalidOperationException is thrown
-        
+        // RULE: Modifier order does not matter — both Shift().Ctrl() and Ctrl().Shift() yield the same combined step.
+        // SETUP: Build a Shift+Ctrl+RightArrow binding via the fluent API.
+        // EXPECTED: The resulting step carries both Control and Shift flags.
+
         var builder = new InputBindingsBuilder();
-        
-        var ex = Assert.Throws<InvalidOperationException>(() =>
-        {
-            builder.Shift().Ctrl();
-        });
-        
-        Assert.Contains("Cannot combine Ctrl and Shift", ex.Message);
+        builder.Shift().Ctrl().Key(Hex1bKey.RightArrow).Action(() => { });
+
+        var binding = Assert.Single(builder.Bindings);
+        var step = Assert.Single(binding.Steps);
+        Assert.Equal(Hex1bKey.RightArrow, step.Key);
+        Assert.Equal(Hex1bModifiers.Control | Hex1bModifiers.Shift, step.Modifiers);
+    }
+
+    [Fact]
+    public async Task CtrlShiftBinding_GlobalBinding_FiresEndToEnd()
+    {
+        // RULE: A Ctrl+Shift+Key binding declared via the fluent API
+        //       routes correctly when the terminal delivers a Ctrl+Shift+Key event.
+        // SETUP: VStack with a global Ctrl+Shift+LeftArrow binding.
+        // ACTION: Press Ctrl+Shift+LeftArrow.
+        // EXPECTED: Binding fires.
+
+        using var workload = new Hex1bAppWorkloadAdapter();
+        using var terminal = Hex1bTerminal.CreateBuilder().WithWorkload(workload).WithHeadless().WithDimensions(80, 24).Build();
+        var bindingFired = false;
+        var renderOccurred = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using var app = new Hex1bApp(
+            ctx => ctx.VStack(v => [
+                v.Test().OnRender(_ => renderOccurred.TrySetResult())
+            ]).InputBindings(b =>
+            {
+                b.Ctrl().Shift().Key(Hex1bKey.LeftArrow).Action(_ =>
+                {
+                    bindingFired = true;
+                    return Task.CompletedTask;
+                }, "Global Ctrl+Shift+LeftArrow");
+            }),
+            new Hex1bAppOptions { WorkloadAdapter = workload, EnableDefaultCtrlCExit = false }
+        );
+
+        using var cts = new CancellationTokenSource();
+        var runTask = app.RunAsync(cts.Token);
+
+        await renderOccurred.Task.WaitAsync(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
+        await new Hex1bTerminalInputSequenceBuilder().Ctrl().Shift().Key(Hex1bKey.LeftArrow).Wait(100).Capture("final").Build().ApplyWithCaptureAsync(terminal, TestContext.Current.CancellationToken);
+
+        Assert.True(bindingFired, "Ctrl+Shift+LeftArrow global binding should fire end-to-end");
+
+        cts.Cancel();
+        await runTask;
     }
 
     #endregion

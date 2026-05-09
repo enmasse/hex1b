@@ -1,6 +1,18 @@
 # Input Handling
 
-Hex1b provides a comprehensive input system with focus management, keyboard routing, and declarative input bindings. Every built-in widget exposes named actions that you can remap, extend, or disable — making it straightforward to implement custom keybinding schemes like Vim or Emacs without forking widget code.
+Hex1b provides a comprehensive input system with focus management, keyboard routing, and declarative input bindings. Every built-in widget exposes named actions that you can remap, extend, or disable — making it straightforward to implement custom keybinding schemes like Vim or Emacs without forking widget code. **If a binding you registered never fires on a particular terminal, jump to [Keybinding Portability](./keybinding-portability) first** — many popular combos are intercepted by the terminal or the OS before Hex1b ever sees them, and that page lists the known offenders per terminal.
+
+::: warning Binding not firing? It might be the terminal, not your code.
+Different terminals intercept different combos *before* they reach Hex1b
+(Windows Terminal eats `Ctrl+Shift+↑/↓` for scroll, GNOME Terminal eats
+`Ctrl+Shift+T/N/W` for tab/window management, kitty owns the entire
+`Ctrl+Shift+*` keyspace by default, and so on). See
+**[Keybinding Portability](./keybinding-portability)** for the per-terminal
+interception matrix and recommendations on choosing combos that work
+across the terminals you target. The
+[`KeyBindingTester`](https://github.com/mitchdenny/hex1b/tree/main/samples/KeyBindingTester)
+sample lets you confirm what fires on any specific terminal in under a minute.
+:::
 
 ## Focus System
 
@@ -32,11 +44,11 @@ This bubbling behavior lets you attach bindings at any level. A binding on a par
 
 ## Input Bindings
 
-The `WithInputBindings` API lets you attach keyboard, mouse, and character bindings to any widget using a fluent builder:
+The `InputBindings` API lets you attach keyboard, mouse, and character bindings to any widget using a fluent builder:
 
 ```csharp
 new ButtonWidget("Save")
-    .WithInputBindings(b =>
+    .InputBindings(b =>
     {
         b.Key(Hex1bKey.S).Ctrl().Action(() => Save(), "Save file");
         b.Key(Hex1bKey.Escape).Action(() => Cancel(), "Cancel");
@@ -52,6 +64,18 @@ b.Key(Hex1bKey.S).Ctrl().Action(() => Save(), "Save");            // Ctrl+S
 b.Key(Hex1bKey.S).Ctrl().Shift().Action(() => SaveAs(), "Save as"); // Ctrl+Shift+S
 b.Key(Hex1bKey.F1).Alt().Action(() => ShowHelp(), "Help");         // Alt+F1
 ```
+
+> **Terminal reachability caveat (`Ctrl+Shift+letter`).** Most terminals
+> cannot distinguish `Ctrl+Shift+A` from `Ctrl+A`: the `Ctrl` modifier
+> strips ASCII bit 6 of a letter and `Shift` is dropped. Bindings on
+> letter keys with the `Ctrl+Shift` combination will therefore not fire
+> on most platforms unless the terminal opts into a richer key reporting
+> mode (e.g. xterm's `modifyOtherKeys`). **Special keys** — arrows,
+> function keys, `Home`/`End`/`PageUp`/`PageDown`, `Tab`, `Insert`,
+> `Delete` — and **mouse buttons** carry an explicit modifier code in
+> their CSI sequences and deliver `Ctrl+Shift` reliably across terminals.
+> Run `samples/KeyBindingTester` to see which combinations your target
+> terminal supports.
 
 ### Available Keys
 
@@ -106,7 +130,7 @@ Attach bindings to a non-focusable container to make them apply globally. Becaus
 ctx.Border(
     ctx.VStack([content])
 )
-.WithInputBindings(b =>
+.InputBindings(b =>
 {
     b.Key(Hex1bKey.Q).Ctrl().Action(() => app.Quit(), "Quit");
     b.Key(Hex1bKey.F5).Action(() => Refresh(), "Refresh");
@@ -144,16 +168,44 @@ protected override void ConfigureDefaultBindings(InputBindingsBuilder bindings)
 
 This separation — actions declared on widgets, defaults wired in nodes — is what makes the rebinding system work. You reference `ListWidget.MoveUp` to remap it; you never need to know what key it was originally bound to.
 
+## Registering Prebuilt Bindings
+
+Most app code uses the fluent API (`b.Ctrl().Key(Hex1bKey.S).Action(...)`), but you can also construct an `InputBinding`, `MouseBinding`, `CharacterBinding`, or `DragBinding` directly and register it via `InputBindingsBuilder.Add(...)`. This is useful when bindings are loaded from configuration, generated dynamically, or shared across multiple widgets.
+
+```csharp
+// Build the binding outside the InputBindings callback.
+var selectWordLeft = new InputBinding(
+    [new KeyStep(Hex1bKey.LeftArrow, Hex1bModifiers.Control | Hex1bModifiers.Shift)],
+    handler: ctx => SelectPreviousWord(ctx),
+    description: "Select previous word",
+    isGlobal: false,
+    actionId: new ActionId("MyApp.SelectWordLeft"),
+    overridesCapture: false);
+
+widget.InputBindings(b => b.Add(selectWordLeft));
+```
+
+The same pattern works for `Add(MouseBinding)`, `Add(CharacterBinding)`, and `Add(DragBinding)`. Each overload throws `ArgumentNullException` when given `null`.
+
+### Caveats
+
+A few constraints are worth knowing about before relying on prebuilt bindings:
+
+- **Treat each binding instance as single-use.** The router stamps `OwnerNode` on the binding during input collection, so reusing the same `InputBinding` instance across multiple widgets produces ambiguous owner metadata. Construct a fresh instance per registration.
+- **Mouse and drag bindings on non-focusable nodes never fire.** Mouse routing hit-tests focusable nodes only — bindings on a plain container (e.g., `VStack`, `Border`) won't receive mouse events. Wrap the container in `InteractableWidget` to make it mouse-routable.
+- **Character bindings are checked only on the focused node.** They have no global-style fallback; `Add(CharacterBinding)` on a non-focusable widget will compile and store the binding but it won't ever match.
+- **Constructor-supplied `ActionId` does NOT enable `Triggers(actionId)` rebinding.** It supports `Remove(ActionId)` and `GetBindings(ActionId)` only. If you need apps to re-bind your action by id, register through the fluent `Triggers(actionId, handler, description)` path instead — that path also seeds the rebinding registry.
+
 ## Customizing Keybindings
 
-The `WithInputBindings` API combined with `ActionId` gives you four patterns for customizing widget behavior.
+The `InputBindings` API combined with `ActionId` gives you four patterns for customizing widget behavior.
 
 ### Remap — Change a Key
 
 Remove the default binding and re-bind the same action to a new key:
 
 ```csharp
-list.WithInputBindings(b =>
+list.InputBindings(b =>
 {
     b.Remove(ListWidget.MoveUp);
     b.Key(Hex1bKey.K).Triggers(ListWidget.MoveUp);
@@ -167,7 +219,7 @@ The `K` key now moves up. The original `UpArrow` binding is removed.
 Add a new key without removing the default. Both keys will trigger the action:
 
 ```csharp
-list.WithInputBindings(b =>
+list.InputBindings(b =>
 {
     b.Key(Hex1bKey.K).Triggers(ListWidget.MoveUp); // K and UpArrow both work
 })
@@ -178,7 +230,7 @@ list.WithInputBindings(b =>
 Remove a binding without replacing it:
 
 ```csharp
-list.WithInputBindings(b =>
+list.InputBindings(b =>
 {
     b.Remove(ListWidget.Activate); // Enter no longer activates items
 })
@@ -189,7 +241,7 @@ list.WithInputBindings(b =>
 Remove all default bindings and define your own from scratch:
 
 ```csharp
-list.WithInputBindings(b =>
+list.InputBindings(b =>
 {
     b.RemoveAll();
     b.Key(Hex1bKey.K).Action(() => MoveUp(), "Custom up");
@@ -199,7 +251,7 @@ list.WithInputBindings(b =>
 
 ## Centralized Overrides with InputOverride
 
-`InputOverrideWidget` lets you apply keybinding changes to **all widgets of a given type** within a subtree — no need to attach `WithInputBindings` to every instance.
+`InputOverrideWidget` lets you apply keybinding changes to **all widgets of a given type** within a subtree — no need to attach `InputBindings` to every instance.
 
 ```csharp
 ctx.InputOverride(
@@ -249,7 +301,7 @@ When `InputOverride` widgets are nested, the **innermost override wins** for a g
 
 ### Interaction with Per-Instance Bindings
 
-When both `WithInputBindings` (per-instance) and `InputOverride` (centralized) apply to the same widget, the per-instance bindings run **first**, then the override is applied. This means a per-instance binding takes priority for any specific action it configures.
+When both `InputBindings` (per-instance) and `InputOverride` (centralized) apply to the same widget, the per-instance bindings run **first**, then the override is applied. This means a per-instance binding takes priority for any specific action it configures.
 
 ## Walkthrough: Vim-Style Keybindings
 
@@ -344,7 +396,7 @@ public class MyCustomNode : Hex1bNode
 You can inspect a widget's registered actions and their current bindings at runtime:
 
 ```csharp
-widget.WithInputBindings(b =>
+widget.InputBindings(b =>
 {
     var allActions = b.GetAllActionIds();    // All registered ActionIds
     var bindings = b.GetBindings(ListWidget.MoveUp); // Keys bound to MoveUp
@@ -385,6 +437,8 @@ Every built-in widget's named actions, their `ActionId` values, and default key 
 | `TextBoxWidget.MoveWordRight` | `"TextBoxWidget.MoveWordRight"` | Ctrl+→ |
 | `TextBoxWidget.SelectLeft` | `"TextBoxWidget.SelectLeft"` | Shift+← |
 | `TextBoxWidget.SelectRight` | `"TextBoxWidget.SelectRight"` | Shift+→ |
+| `TextBoxWidget.SelectWordLeft` | `"TextBoxWidget.SelectWordLeft"` | Ctrl+Shift+← |
+| `TextBoxWidget.SelectWordRight` | `"TextBoxWidget.SelectWordRight"` | Ctrl+Shift+→ |
 | `TextBoxWidget.SelectToStart` | `"TextBoxWidget.SelectToStart"` | Shift+Home |
 | `TextBoxWidget.SelectToEnd` | `"TextBoxWidget.SelectToEnd"` | Shift+End |
 | `TextBoxWidget.SelectAll` | `"TextBoxWidget.SelectAll"` | Ctrl+A, Mouse DoubleClick |

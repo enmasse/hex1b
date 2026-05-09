@@ -445,7 +445,7 @@ await using var terminal = Hex1bTerminal.CreateBuilder()
                                     else
                                     {
                                         widgets.Add(content.Editor(hexState)
-                                            .WithViewRenderer(new HexEditorViewRenderer())
+                                            .ViewRenderer(new HexEditorViewRenderer())
                                             .FillWidth().FillHeight());
                                     }
 
@@ -470,7 +470,7 @@ await using var terminal = Hex1bTerminal.CreateBuilder()
             {
                 var items = new List<IInfoBarChild>();
                 items.Add(ib.Section("hex1b IDE"));
-                items.Add(ib.Separator());
+                items.Add(ib.Divider());
 
                 if (activeTab >= 0 && activeTab < openTabs.Count)
                 {
@@ -483,9 +483,9 @@ await using var terminal = Hex1bTerminal.CreateBuilder()
                         var cursorOffset = Math.Min(entry.TextState.Cursor.Position.Value, entry.Doc.Length);
                         var pos = entry.Doc.OffsetToPosition(new DocumentOffset(cursorOffset));
                         items.Add(ib.Section($"Ln {pos.Line + 1}, Col {pos.Column + 1}"));
-                        items.Add(ib.Separator());
+                        items.Add(ib.Divider());
                         items.Add(ib.Section($"{entry.Doc.Length} chars"));
-                        items.Add(ib.Separator());
+                        items.Add(ib.Divider());
                         items.Add(ib.Section("UTF-8"));
                     }
                 }

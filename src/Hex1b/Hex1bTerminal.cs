@@ -50,7 +50,7 @@ namespace Hex1b;
 /// Assert.True(terminal.ContainsText("Hello"));
 /// </code>
 /// </example>
-public sealed class Hex1bTerminal : IDisposable, IAsyncDisposable
+public sealed partial class Hex1bTerminal : IDisposable, IAsyncDisposable
 {
     private readonly IHex1bTerminalPresentationAdapter _presentation;
     private readonly IHex1bTerminalWorkloadAdapter _workload;
@@ -170,6 +170,31 @@ public sealed class Hex1bTerminal : IDisposable, IAsyncDisposable
     // Default is true — Hex1b always clusters graphemes like modern terminals.
     // Applications can disable with CSI ? 2027 l for per-codepoint handling.
     private bool _graphemeClusterMode = true;
+
+    // Replayable terminal modes that affect input/rendering.
+    //
+    // These are tracked here (in addition to the widget-level handle that some
+    // higher-level Hex1b APIs use) so that presentation adapters consuming the
+    // terminal directly — most notably <see cref="Hmp1PresentationAdapter"/> —
+    // can reproduce the modes for a viewer that connects after the workload
+    // has already configured them. Without this tracking, a TUI app that sets
+    // mouse tracking, hides the cursor, switches to the alt screen, etc.
+    // would lose those settings on every reconnect because the cell-content
+    // replay (ToAnsi) only carries visible state.
+    private bool _cursorVisible = true;            // DECTCEM (mode 25), default on
+    private bool _bracketedPasteMode = false;      // mode 2004
+    private bool _appCursorKeysMode = false;       // DECCKM (mode 1)
+    private bool _appKeypadMode = false;           // DECKPAM (ESC =) / DECKPNM (ESC >)
+    private bool _focusEventReporting = false;     // mode 1004
+    private bool _mouseProtocolX10 = false;        // mode 9
+    private bool _mouseProtocolNormal = false;     // mode 1000
+    private bool _mouseProtocolHighlight = false;  // mode 1001
+    private bool _mouseProtocolButton = false;     // mode 1002 (button-event tracking)
+    private bool _mouseProtocolAny = false;        // mode 1003 (any-event / motion tracking)
+    private bool _mouseEncodingUtf8 = false;       // mode 1005
+    private bool _mouseEncodingSgr = false;        // mode 1006
+    private bool _mouseEncodingUrxvt = false;      // mode 1015
+    private int _cursorShape = 0;                  // 0=default; 1..6 per DECSCUSR
     
     // Last printed character for CSI b (REP - repeat) command
     private TerminalCell _lastPrintedCell = TerminalCell.Empty;
@@ -1120,9 +1145,24 @@ public sealed class Hex1bTerminal : IDisposable, IAsyncDisposable
             Hex1bKey.F4 => 'S',
             _ => '\0'
         };
-        if (ss3Char != '\0' && evt.Modifiers == Hex1bModifiers.None)
+        if (ss3Char != '\0')
         {
-            return new Ss3Token(ss3Char);
+            // Plain F1-F4 use SS3 (ESC O <P/Q/R/S>); modified F1-F4 use CSI 1;{mod}<P/Q/R/S>
+            // (xterm convention). The corresponding F-key codes for SpecialKeyToken are
+            // 11=F1, 12=F2, 13=F3, 14=F4.
+            if (evt.Modifiers == Hex1bModifiers.None)
+            {
+                return new Ss3Token(ss3Char);
+            }
+            var fKeyCode = evt.Key switch
+            {
+                Hex1bKey.F1 => 11,
+                Hex1bKey.F2 => 12,
+                Hex1bKey.F3 => 13,
+                Hex1bKey.F4 => 14,
+                _ => 0
+            };
+            return new SpecialKeyToken(fKeyCode, EncodeModifiers(evt.Modifiers));
         }
         
         // Check for special keys that use CSI ~ sequences
@@ -1719,6 +1759,25 @@ public sealed class Hex1bTerminal : IDisposable, IAsyncDisposable
 
     /// <summary>Gets whether the terminal has a pending wrap (for testing).</summary>
     internal bool PendingWrap => _pendingWrap;
+
+    // Replayable terminal mode accessors. See the field declarations near the
+    // top of the file for the rationale. These are exposed as internal so that
+    // Hex1b.Automation.Hex1bTerminalSnapshot (same assembly) can capture them
+    // for presentation-adapter replay.
+    internal bool CursorVisible => _cursorVisible;
+    internal bool BracketedPasteEnabled => _bracketedPasteMode;
+    internal bool ApplicationCursorKeysEnabled => _appCursorKeysMode;
+    internal bool ApplicationKeypadEnabled => _appKeypadMode;
+    internal bool FocusEventsEnabled => _focusEventReporting;
+    internal bool MouseProtocolX10Enabled => _mouseProtocolX10;
+    internal bool MouseProtocolNormalEnabled => _mouseProtocolNormal;
+    internal bool MouseProtocolHighlightEnabled => _mouseProtocolHighlight;
+    internal bool MouseProtocolButtonEnabled => _mouseProtocolButton;
+    internal bool MouseProtocolAnyEnabled => _mouseProtocolAny;
+    internal bool MouseEncodingUtf8Enabled => _mouseEncodingUtf8;
+    internal bool MouseEncodingSgrEnabled => _mouseEncodingSgr;
+    internal bool MouseEncodingUrxvtEnabled => _mouseEncodingUrxvt;
+    internal int CursorShape => _cursorShape;
 
     /// <summary>
     /// The scrollback buffer, if one was configured via <see cref="Hex1bTerminalOptions.ScrollbackCapacity"/>.
@@ -2552,6 +2611,66 @@ public sealed class Hex1bTerminal : IDisposable, IAsyncDisposable
                     // When disabled, each codepoint is treated individually.
                     _graphemeClusterMode = privateModeToken.Enable;
                 }
+                else if (privateModeToken.Mode == 1)
+                {
+                    // DECCKM - Application Cursor Keys Mode
+                    _appCursorKeysMode = privateModeToken.Enable;
+                }
+                else if (privateModeToken.Mode == 9)
+                {
+                    // X10 mouse compatibility tracking
+                    _mouseProtocolX10 = privateModeToken.Enable;
+                }
+                else if (privateModeToken.Mode == 25)
+                {
+                    // DECTCEM - Cursor visibility
+                    _cursorVisible = privateModeToken.Enable;
+                }
+                else if (privateModeToken.Mode == 1000)
+                {
+                    // X11 normal mouse tracking (button press/release)
+                    _mouseProtocolNormal = privateModeToken.Enable;
+                }
+                else if (privateModeToken.Mode == 1001)
+                {
+                    // X11 hilite mouse tracking
+                    _mouseProtocolHighlight = privateModeToken.Enable;
+                }
+                else if (privateModeToken.Mode == 1002)
+                {
+                    // Button-event mouse tracking (press/release/drag)
+                    _mouseProtocolButton = privateModeToken.Enable;
+                }
+                else if (privateModeToken.Mode == 1003)
+                {
+                    // Any-event mouse tracking (also reports motion without buttons)
+                    _mouseProtocolAny = privateModeToken.Enable;
+                }
+                else if (privateModeToken.Mode == 1004)
+                {
+                    // Focus-in/focus-out reporting
+                    _focusEventReporting = privateModeToken.Enable;
+                }
+                else if (privateModeToken.Mode == 1005)
+                {
+                    // UTF-8 mouse encoding
+                    _mouseEncodingUtf8 = privateModeToken.Enable;
+                }
+                else if (privateModeToken.Mode == 1006)
+                {
+                    // SGR mouse encoding
+                    _mouseEncodingSgr = privateModeToken.Enable;
+                }
+                else if (privateModeToken.Mode == 1015)
+                {
+                    // urxvt mouse encoding
+                    _mouseEncodingUrxvt = privateModeToken.Enable;
+                }
+                else if (privateModeToken.Mode == 2004)
+                {
+                    // Bracketed paste mode
+                    _bracketedPasteMode = privateModeToken.Enable;
+                }
                 break;
             
             case StandardModeToken stdModeToken:
@@ -2649,8 +2768,11 @@ public sealed class Hex1bTerminal : IDisposable, IAsyncDisposable
                 }
                 break;
                 
-            case CursorShapeToken:
-                // Cursor shape is presentation-only, no buffer state to update
+            case CursorShapeToken cursorShapeToken:
+                // DECSCUSR — purely presentational, but tracked so a viewer
+                // attaching after the workload set a non-default shape sees
+                // the same cursor.
+                _cursorShape = cursorShapeToken.Shape;
                 break;
                 
             case CursorMoveToken moveToken:
@@ -2843,8 +2965,11 @@ public sealed class Hex1bTerminal : IDisposable, IAsyncDisposable
                 }
                 break;
             
-            case KeypadModeToken:
-                // Keypad mode - presentation-only, no buffer state
+            case KeypadModeToken kpToken:
+                // ESC = / ESC > — DECKPAM/DECKPNM. Tracked so that a viewer
+                // attaching after the workload entered application-keypad
+                // mode sees the same numeric/application-keypad behaviour.
+                _appKeypadMode = kpToken.Application;
                 break;
                 
             case UnrecognizedSequenceToken:
@@ -5762,27 +5887,27 @@ public sealed class Hex1bTerminal : IDisposable, IAsyncDisposable
 
     private static Hex1bColor StandardColorFromCode(int code) => code switch
     {
-        0 => Hex1bColor.FromRgb(0, 0, 0),
-        1 => Hex1bColor.FromRgb(128, 0, 0),
-        2 => Hex1bColor.FromRgb(0, 128, 0),
-        3 => Hex1bColor.FromRgb(128, 128, 0),
-        4 => Hex1bColor.FromRgb(0, 0, 128),
-        5 => Hex1bColor.FromRgb(128, 0, 128),
-        6 => Hex1bColor.FromRgb(0, 128, 128),
-        7 => Hex1bColor.FromRgb(192, 192, 192),
+        0 => Hex1bColor.FromStandard(0, 0, 0, 0),
+        1 => Hex1bColor.FromStandard(1, 128, 0, 0),
+        2 => Hex1bColor.FromStandard(2, 0, 128, 0),
+        3 => Hex1bColor.FromStandard(3, 128, 128, 0),
+        4 => Hex1bColor.FromStandard(4, 0, 0, 128),
+        5 => Hex1bColor.FromStandard(5, 128, 0, 128),
+        6 => Hex1bColor.FromStandard(6, 0, 128, 128),
+        7 => Hex1bColor.FromStandard(7, 192, 192, 192),
         _ => Hex1bColor.FromRgb(128, 128, 128)
     };
 
     private static Hex1bColor BrightColorFromCode(int code) => code switch
     {
-        0 => Hex1bColor.FromRgb(128, 128, 128),
-        1 => Hex1bColor.FromRgb(255, 0, 0),
-        2 => Hex1bColor.FromRgb(0, 255, 0),
-        3 => Hex1bColor.FromRgb(255, 255, 0),
-        4 => Hex1bColor.FromRgb(0, 0, 255),
-        5 => Hex1bColor.FromRgb(255, 0, 255),
-        6 => Hex1bColor.FromRgb(0, 255, 255),
-        7 => Hex1bColor.FromRgb(255, 255, 255),
+        0 => Hex1bColor.FromBright(0, 128, 128, 128),
+        1 => Hex1bColor.FromBright(1, 255, 0, 0),
+        2 => Hex1bColor.FromBright(2, 0, 255, 0),
+        3 => Hex1bColor.FromBright(3, 255, 255, 0),
+        4 => Hex1bColor.FromBright(4, 0, 0, 255),
+        5 => Hex1bColor.FromBright(5, 255, 0, 255),
+        6 => Hex1bColor.FromBright(6, 0, 255, 255),
+        7 => Hex1bColor.FromBright(7, 255, 255, 255),
         _ => Hex1bColor.FromRgb(192, 192, 192)
     };
 
@@ -5794,16 +5919,16 @@ public sealed class Hex1bTerminal : IDisposable, IAsyncDisposable
         }
         else if (index < 232)
         {
-            index -= 16;
-            var r = (index / 36) * 51;
-            var g = ((index / 6) % 6) * 51;
-            var b = (index % 6) * 51;
-            return Hex1bColor.FromRgb((byte)r, (byte)g, (byte)b);
+            var i = index - 16;
+            var r = (i / 36) * 51;
+            var g = ((i / 6) % 6) * 51;
+            var b = (i % 6) * 51;
+            return Hex1bColor.FromIndexed((byte)index, (byte)r, (byte)g, (byte)b);
         }
         else
         {
             var gray = (index - 232) * 10 + 8;
-            return Hex1bColor.FromRgb((byte)gray, (byte)gray, (byte)gray);
+            return Hex1bColor.FromIndexed((byte)index, (byte)gray, (byte)gray, (byte)gray);
         }
     }
 

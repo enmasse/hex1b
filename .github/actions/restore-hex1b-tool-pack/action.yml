@@ -1,0 +1,67 @@
+name: 'Restore Hex1b.Tool Pack Dependencies'
+description: 'Restore Hex1b.Tool against a freshly packed Hex1b package using a temporary package-source-mapped NuGet config.'
+
+inputs:
+  package-version:
+    description: 'Hex1b package version to restore into Hex1b.Tool'
+    required: true
+  artifacts-path:
+    description: 'Directory containing the freshly packed Hex1b package'
+    required: false
+    default: './artifacts'
+  project-path:
+    description: 'Hex1b.Tool project to restore'
+    required: false
+    default: 'src/Hex1b.Tool/Hex1b.Tool.csproj'
+
+outputs:
+  config_path:
+    description: 'Path to the generated temporary NuGet config'
+    value: ${{ steps.prepare.outputs.config_path }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Create temporary NuGet config
+      id: prepare
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        tool_pack_config="${RUNNER_TEMP}/NuGet.Hex1b.Tool.config"
+        artifacts_source="$(cd "${{ inputs.artifacts-path }}" && pwd)"
+
+        # Hex1b.Tool normally builds against a project reference. Switch restore to the
+        # freshly packed Hex1b package here so the tool package matches dotnet tool/dnx.
+        # The checked-in NuGet.config maps all packages to nuget.org, so use a temporary
+        # config that maps Hex1b* to the local artifacts feed without changing the repo.
+        cat > "$tool_pack_config" <<EOF
+        <?xml version="1.0" encoding="utf-8"?>
+        <configuration>
+          <packageSources>
+            <clear />
+            <add key="local-artifacts" value="$artifacts_source" />
+            <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+          </packageSources>
+          <packageSourceMapping>
+            <packageSource key="local-artifacts">
+              <package pattern="Hex1b*" />
+            </packageSource>
+            <packageSource key="nuget.org">
+              <package pattern="*" />
+            </packageSource>
+          </packageSourceMapping>
+        </configuration>
+        EOF
+
+        echo "config_path=$tool_pack_config" >> "$GITHUB_OUTPUT"
+
+    - name: Restore Hex1b.Tool against packaged Hex1b
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        dotnet restore "${{ inputs.project-path }}" \
+          -p:UseHex1bPackageReference=true \
+          -p:Hex1bPackageVersion=${{ inputs.package-version }} \
+          --configfile "${{ steps.prepare.outputs.config_path }}"

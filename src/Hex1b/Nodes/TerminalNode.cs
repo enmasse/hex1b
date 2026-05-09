@@ -47,10 +47,24 @@ public sealed class TerminalNode : Hex1bNode
     // and keyboard input is intercepted for scrollback navigation instead of forwarded to the child
     private int _scrollbackOffset;
     
+    // Copy mode helper (attached via CopyModeBindings)
+    private TerminalCopyModeHelper? _copyModeHelper;
+    
     /// <summary>
     /// Number of rows to scroll per mouse wheel tick.
     /// </summary>
     internal int MouseWheelScrollAmount { get; set; } = 3;
+
+    /// <summary>
+    /// Background colour applied to default-background cells and the framing area.
+    /// When <see cref="Hex1b.Theming.Hex1bColor.IsDefault"/> is true (the default),
+    /// the terminal renders transparently and inherits its surroundings' colour during
+    /// surface composition.
+    /// </summary>
+    /// <remarks>
+    /// Set via <see cref="Hex1b.Widgets.TerminalWidget.BackgroundColor"/> on the source widget.
+    /// </remarks>
+    internal Hex1b.Theming.Hex1bColor BackgroundColor { get; set; } = Hex1b.Theming.Hex1bColor.Default;
     
     /// <summary>
     /// Gets or sets the terminal handle this node renders from.
@@ -163,9 +177,8 @@ public sealed class TerminalNode : Hex1bNode
     /// <inheritdoc />
     public override void ConfigureDefaultBindings(InputBindingsBuilder bindings)
     {
-        // Keyboard scrollback navigation
-        // Note: Ctrl+Shift combinations are not supported by the input binding system,
-        // so we use Shift+Arrow/PageUp/PageDown/Home/End which matches GNOME Terminal conventions
+        // Keyboard scrollback navigation.
+        // We use Shift+Arrow/PageUp/PageDown/Home/End to match GNOME Terminal conventions.
         bindings.Shift().Key(Hex1bKey.UpArrow).Triggers(TerminalWidget.ScrollUpLine, ScrollUpLineHandler, "Scroll up one line");
         bindings.Shift().Key(Hex1bKey.DownArrow).Triggers(TerminalWidget.ScrollDownLine, ScrollDownLineHandler, "Scroll down one line");
         bindings.Shift().Key(Hex1bKey.PageUp).Triggers(TerminalWidget.ScrollUpPage, ScrollUpPageHandler, "Scroll up one page");
@@ -272,6 +285,7 @@ public sealed class TerminalNode : Hex1bNode
         if (newOffset != _scrollbackOffset)
         {
             _scrollbackOffset = newOffset;
+            _handle.CurrentScrollbackOffset = _scrollbackOffset;
             MarkDirty();
             _invalidateCallback?.Invoke();
         }
@@ -290,9 +304,39 @@ public sealed class TerminalNode : Hex1bNode
         // Forward input to the terminal
         if (_handle == null) return InputResult.NotHandled;
         
+        // When in copy mode, intercept all input (keyboard and mouse).
+        // Delegate to the handle's CopyModeInput event.
+        if (_handle.IsInCopyMode)
+        {
+            _handle.RaiseCopyModeInput(inputEvent);
+            MarkDirty();
+            _invalidateCallback?.Invoke();
+            return InputResult.Handled;
+        }
+        
+        // When NOT in copy mode, give the CopyModeInput handler a chance to intercept.
+        // For keyboard: entry key like F6.
+        // For mouse: when mouse tracking is OFF, allow direct selection without explicit copy mode.
+        if (inputEvent is Hex1bKeyEvent && _handle.RaiseCopyModeInput(inputEvent))
+        {
+            MarkDirty();
+            _invalidateCallback?.Invoke();
+            return InputResult.Handled;
+        }
+        
+        if (inputEvent is Hex1bMouseEvent mouseEvt && !_handle.MouseTrackingEnabled)
+        {
+            // Mouse tracking off — let consumer handle mouse for selection
+            if (_handle.RaiseCopyModeInput(inputEvent))
+            {
+                MarkDirty();
+                _invalidateCallback?.Invoke();
+                return InputResult.Handled;
+            }
+        }
+        
         // When in scrollback mode and a non-scrollback key is pressed (no binding matched),
         // snap back to live view and forward the keystroke to the terminal.
-        // This matches standard terminal behavior where typing snaps you back to the prompt.
         if (IsInScrollbackMode && inputEvent is Hex1bKeyEvent)
         {
             _scrollbackOffset = 0;
@@ -408,6 +452,31 @@ public sealed class TerminalNode : Hex1bNode
             _outputReceivedHandler = null;
         }
         _isBound = false;
+    }
+    
+    /// <summary>
+    /// Attaches or detaches the copy mode helper based on widget configuration.
+    /// </summary>
+    internal void AttachCopyModeHelper(CopyModeBindingsOptions? options, Action<string>? defaultClipboard = null)
+    {
+        if (options == null)
+        {
+            // Detach existing helper if any
+            _copyModeHelper?.Detach();
+            _copyModeHelper = null;
+            return;
+        }
+        
+        if (_handle == null) return;
+        
+        // Only create if not already attached (or if handle changed)
+        if (_copyModeHelper == null)
+        {
+            _copyModeHelper = new TerminalCopyModeHelper(_handle, options);
+        }
+        
+        // Set the default clipboard callback from the app
+        _copyModeHelper.SetDefaultClipboard(defaultClipboard);
     }
     
     private void OnOutputReceived()
@@ -539,13 +608,31 @@ public sealed class TerminalNode : Hex1bNode
         
         // Mark this version as rendered (we'll check if more output arrived after this)
         _lastRenderedVersion = currentVersion;
-        
+
+        // Apply the explicit background colour (if set) so the terminal owns its surface
+        // and isn't transparent. The Surface composition pipeline uses FillBackground to
+        // paint empty cells AND to coerce cells with a transparent background to this
+        // colour — see Surface.FillBackground. Without this any container painted
+        // beneath the terminal (e.g. BackgroundPanelWidget) bleeds through every cell
+        // the workload writes with the default background.
+        if (!BackgroundColor.IsDefault)
+        {
+            FillBackground = BackgroundColor;
+        }
+
         // Clear the entire terminal region before rendering rows.
         // This is necessary because empty terminal cells (TerminalCell.Empty) have null
         // foreground/background, which produces transparent SurfaceCells. Without clearing,
         // empty rows below the cursor won't overwrite content from a previous frame
         // (e.g., after scrolling back from scrollback mode to live mode).
         context.ClearRegion(Bounds);
+        
+        // Sync scrollback offset from handle when in copy mode
+        // (the handle adjusts it to keep the copy cursor visible)
+        if (_handle.IsInCopyMode)
+        {
+            _scrollbackOffset = _handle.CurrentScrollbackOffset;
+        }
         
         if (_scrollbackOffset > 0)
         {
@@ -562,9 +649,19 @@ public sealed class TerminalNode : Hex1bNode
     /// </summary>
     private void RenderLive(Hex1bRenderContext context, TerminalCell[,] buffer, int handleWidth, int handleHeight)
     {
+        int scrollbackCount = _handle!.ScrollbackCount;
+        var selection = _handle.IsInCopyMode ? _handle.Selection : null;
+        
         for (int y = 0; y < Math.Min(Bounds.Height, handleHeight); y++)
         {
-            RenderRow(context, y, (x) => buffer[y, x], handleWidth);
+            int virtualRow = scrollbackCount + y;
+            RenderRow(context, y, (x) => buffer[y, x], handleWidth, virtualRow, selection);
+        }
+        
+        // Render copy mode cursor
+        if (selection != null)
+        {
+            RenderCopyModeCursor(context, scrollbackCount, scrollbackCount);
         }
     }
     
@@ -577,6 +674,7 @@ public sealed class TerminalNode : Hex1bNode
         // Get scrollback rows
         var scrollbackRows = _handle!.GetScrollbackSnapshot(_handle.ScrollbackCount);
         int scrollbackCount = scrollbackRows.Length;
+        var selection = _handle.IsInCopyMode ? _handle.Selection : null;
         
         // Clamp offset to available scrollback
         var effectiveOffset = Math.Min(_scrollbackOffset, scrollbackCount);
@@ -600,7 +698,7 @@ public sealed class TerminalNode : Hex1bNode
                 {
                     if (x < sbRow.Cells.Length) return sbRow.Cells[x];
                     return TerminalCell.Empty;
-                }, handleWidth);
+                }, handleWidth, virtualRow, selection);
             }
             else
             {
@@ -608,29 +706,59 @@ public sealed class TerminalNode : Hex1bNode
                 int activeRow = virtualRow - scrollbackCount;
                 if (activeRow < handleHeight)
                 {
-                    RenderRow(context, viewY, (x) => activeBuffer[activeRow, x], handleWidth);
+                    RenderRow(context, viewY, (x) => activeBuffer[activeRow, x], handleWidth, virtualRow, selection);
                 }
             }
+        }
+        
+        // Render copy mode cursor
+        if (selection != null)
+        {
+            RenderCopyModeCursor(context, virtualStart, scrollbackCount);
+        }
+    }
+    
+    private void RenderCopyModeCursor(Hex1bRenderContext context, int virtualStart, int scrollbackCount)
+    {
+        if (_handle?.Selection == null) return;
+        var cursorPos = _handle.Selection.Cursor;
+        int viewY = cursorPos.Row - virtualStart;
+        if (viewY >= 0 && viewY < Bounds.Height && cursorPos.Column < Bounds.Width)
+        {
+            // Render a block cursor at the copy mode cursor position with inverted colors
+            var cell = _handle.GetVirtualCell(cursorPos.Row, cursorPos.Column);
+            var ch = cell?.Character ?? " ";
+            if (string.IsNullOrEmpty(ch)) ch = " ";
+            context.WriteClipped(Bounds.X + cursorPos.Column, Bounds.Y + viewY, $"\x1b[7m{ch}\x1b[0m");
         }
     }
     
     /// <summary>
     /// Renders a single row of terminal cells at the specified view Y position.
     /// </summary>
-    private void RenderRow(Hex1bRenderContext context, int viewY, Func<int, TerminalCell> getCell, int handleWidth)
+    private void RenderRow(Hex1bRenderContext context, int viewY, Func<int, TerminalCell> getCell, int handleWidth,
+        int virtualRow = -1, TerminalSelection? selection = null)
     {
         var lineBuilder = new System.Text.StringBuilder();
         Hex1b.Theming.Hex1bColor? lastFg = null;
         Hex1b.Theming.Hex1bColor? lastBg = null;
         Hex1b.Theming.Hex1bColor? lastUc = null;
         CellAttributes lastAttrs = CellAttributes.None;
+        bool lastSelected = false;
         
         for (int x = 0; x < Math.Min(Bounds.Width, handleWidth); x++)
         {
             var cell = getCell(x);
+            bool isSelected = selection != null && virtualRow >= 0 && selection.IsCellSelected(virtualRow, x);
             
             // Build ANSI codes for color changes
             bool needsReset = false;
+            
+            // Check if selection state changed
+            if (isSelected != lastSelected)
+            {
+                needsReset = true;
+            }
             
             // Check if attributes changed
             if (cell.Attributes != lastAttrs)
@@ -662,7 +790,7 @@ public sealed class TerminalNode : Hex1bNode
                     else
                         lineBuilder.Append("\x1b[4m");
                 }
-                if (cell.Attributes.HasFlag(CellAttributes.Reverse))
+                if (cell.Attributes.HasFlag(CellAttributes.Reverse) || isSelected)
                     lineBuilder.Append("\x1b[7m");
                 if (cell.Attributes.HasFlag(CellAttributes.Strikethrough))
                     lineBuilder.Append("\x1b[9m");
@@ -680,6 +808,7 @@ public sealed class TerminalNode : Hex1bNode
                 lastBg = cell.Background;
                 lastUc = cell.UnderlineColor;
                 lastAttrs = cell.Attributes;
+                lastSelected = isSelected;
             }
             
             lineBuilder.Append(cell.Character);

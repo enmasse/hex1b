@@ -1,0 +1,471 @@
+using System.IO.Pipelines;
+using System.Text;
+using Hex1b;
+using Hex1b.Tokens;
+
+namespace Hex1b.Tests.Muxer;
+
+public class MuxerAdapterTests
+{
+    [Fact]
+    public async Task ClientServer_HelloAndStateSync_ReceivedByClient()
+    {
+        var (stream1, stream2) = CreateFullDuplexPair();
+
+        await using var server = new Hmp1PresentationAdapter(80, 24);
+        var client = Hmp1TestHelpers.NewClient(stream2);
+
+        var (handle, _) = await ConnectPairAsync(server, stream1, client);
+        Assert.True(handle.IsConnected);
+
+        await handle.DisposeAsync();
+        await client.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task IntegrationTest_ServerSendsOutput_ClientReceivesIt()
+    {
+        var (stream1, stream2) = CreateFullDuplexPair();
+
+        await using var server = new Hmp1PresentationAdapter(80, 24);
+        var client = Hmp1TestHelpers.NewClient(stream2);
+        var (handle, _) = await ConnectPairAsync(server, stream1, client);
+
+        Assert.Equal(80, client.RemoteWidth);
+        Assert.Equal(24, client.RemoteHeight);
+
+        var outputData = "Hello from server!"u8.ToArray();
+        await server.WriteOutputAsync(outputData);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var received = await client.ReadOutputAsync(cts.Token);
+
+        Assert.Equal(outputData, received.ToArray());
+
+        await handle.DisposeAsync();
+        await client.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task IntegrationTest_ClientSendsInput_ServerReceivesIt()
+    {
+        var (stream1, stream2) = CreateFullDuplexPair();
+
+        await using var server = new Hmp1PresentationAdapter(80, 24);
+        var client = Hmp1TestHelpers.NewClient(stream2);
+        var (handle, _) = await ConnectPairAsync(server, stream1, client);
+
+        var inputData = "keyboard input"u8.ToArray();
+        await client.WriteInputAsync(inputData);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var received = await server.ReadInputAsync(cts.Token);
+
+        Assert.Equal(inputData, received.ToArray());
+
+        await handle.DisposeAsync();
+        await client.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task IntegrationTest_ClientSendsResize_ServerFires()
+    {
+        var (stream1, stream2) = CreateFullDuplexPair();
+
+        await using var server = new Hmp1PresentationAdapter(80, 24);
+        var client = Hmp1TestHelpers.NewClient(stream2);
+        var (handle, _) = await ConnectPairAsync(server, stream1, client);
+
+        var resizeTcs = new TaskCompletionSource<(int Width, int Height)>();
+        server.Resized += (w, h) => resizeTcs.TrySetResult((w, h));
+
+        // Multi-head: only the primary peer can resize. Take primary first.
+        await client.RequestPrimaryAsync(120, 40);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var (newWidth, newHeight) = await resizeTcs.Task.WaitAsync(cts.Token);
+
+        Assert.Equal(120, newWidth);
+        Assert.Equal(40, newHeight);
+        Assert.Equal(120, server.Width);
+        Assert.Equal(40, server.Height);
+
+        await handle.DisposeAsync();
+        await client.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task IntegrationTest_MultipleClients_AllReceiveOutput()
+    {
+        var (stream1a, stream1b) = CreateFullDuplexPair();
+        var (stream2a, stream2b) = CreateFullDuplexPair();
+
+        await using var server = new Hmp1PresentationAdapter(80, 24);
+
+        var client1 = Hmp1TestHelpers.NewClient(stream1b);
+        var client2 = Hmp1TestHelpers.NewClient(stream2b);
+        var (handle1, _) = await ConnectPairAsync(server, stream1a, client1);
+        var (handle2, _) = await ConnectPairAsync(server, stream2a, client2);
+
+        Assert.Equal(2, server.ClientCount);
+
+        var outputData = "broadcast!"u8.ToArray();
+        await server.WriteOutputAsync(outputData);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        var received1 = await client1.ReadOutputAsync(cts.Token);
+        var received2 = await client2.ReadOutputAsync(cts.Token);
+
+        Assert.Equal(outputData, received1.ToArray());
+        Assert.Equal(outputData, received2.ToArray());
+
+        await handle1.DisposeAsync();
+        await handle2.DisposeAsync();
+        await client1.DisposeAsync();
+        await client2.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task IntegrationTest_ClientDisconnect_ServerContinues()
+    {
+        var (stream1a, stream1b) = CreateFullDuplexPair();
+        var (stream2a, stream2b) = CreateFullDuplexPair();
+
+        await using var server = new Hmp1PresentationAdapter(80, 24);
+
+        var client1 = Hmp1TestHelpers.NewClient(stream1b);
+        var client2 = Hmp1TestHelpers.NewClient(stream2b);
+        var (handle1, _) = await ConnectPairAsync(server, stream1a, client1);
+        var (handle2, _) = await ConnectPairAsync(server, stream2a, client2);
+
+        Assert.Equal(2, server.ClientCount);
+
+        await handle1.DisposeAsync();
+        await client1.DisposeAsync();
+
+        await Task.Delay(100);
+
+        var outputData = "still here"u8.ToArray();
+        await server.WriteOutputAsync(outputData);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var received = await client2.ReadOutputAsync(cts.Token);
+
+        Assert.Equal(outputData, received.ToArray());
+
+        await handle2.DisposeAsync();
+        await client2.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task StateReplay_EmitsTrackedPrivateModesOnReconnect()
+    {
+        // The presentation adapter rebuilds the screen state for a new viewer
+        // by sending a StateSync frame derived from a Hex1bTerminal snapshot.
+        // ToAnsi only encodes cells + cursor; this test pins down that
+        // private terminal modes (mouse tracking, focus events, bracketed
+        // paste, etc.) are also emitted so that a viewer reconnecting
+        // mid-session sees the same xterm modes as the original viewer did.
+        await using var adapter = new Hmp1PresentationAdapter(80, 24);
+        using var terminal = new Hex1bTerminal(new Hex1bTerminalOptions
+        {
+            Width = 80,
+            Height = 24,
+            WorkloadAdapter = new NoOpWorkloadAdapter(),
+            PresentationAdapter = adapter
+        });
+
+        // Drive the terminal through a representative TUI startup sequence.
+        // Pick at least one mode in each replay-suffix family so a regression
+        // in any single emit branch surfaces here.
+        terminal.ApplyTokens([
+            new PrivateModeToken(1002, true),  // SET_BTN_EVENT_MOUSE
+            new PrivateModeToken(1006, true),  // SET_SGR_EXT_MODE_MOUSE
+            new PrivateModeToken(1004, true),  // SET_FOCUS_EVENT_MOUSE
+            new PrivateModeToken(2004, true),  // SET_BRACKETED_PASTE
+            new PrivateModeToken(25, false),   // RESET_DECTCEM (hide cursor)
+            new PrivateModeToken(1, true),     // SET_DECCKM (app cursor keys)
+            new KeypadModeToken(true),         // DECKPAM
+            new CursorShapeToken(2),           // DECSCUSR steady block
+        ]);
+
+        var (stream1, stream2) = CreateFullDuplexPair();
+        var client = Hmp1TestHelpers.NewClient(stream2);
+        var (handle, _) = await ConnectPairAsync(adapter, stream1, client);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var stateSyncBytes = await client.ReadOutputAsync(cts.Token);
+        var stateSync = Encoding.UTF8.GetString(stateSyncBytes.Span);
+
+        Assert.Contains("\x1b[?1002h", stateSync);
+        Assert.Contains("\x1b[?1006h", stateSync);
+        Assert.Contains("\x1b[?1004h", stateSync);
+        Assert.Contains("\x1b[?2004h", stateSync);
+        Assert.Contains("\x1b[?25l", stateSync);
+        Assert.Contains("\x1b[?1h", stateSync);
+        Assert.Contains("\x1b=", stateSync);
+        Assert.Contains("\x1b[2 q", stateSync);
+
+        await handle.DisposeAsync();
+        await client.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task StateReplay_OmitsDefaultModes()
+    {
+        // A pristine terminal should produce a StateSync without DECSETs
+        // for any replay-tracked mode, since the viewer's terminal already
+        // starts at those defaults. Otherwise we'd be sending sequences for
+        // every reconnect that have no semantic effect but make the wire
+        // payload larger and the replay slower.
+        await using var adapter = new Hmp1PresentationAdapter(80, 24);
+        using var terminal = new Hex1bTerminal(new Hex1bTerminalOptions
+        {
+            Width = 80,
+            Height = 24,
+            WorkloadAdapter = new NoOpWorkloadAdapter(),
+            PresentationAdapter = adapter
+        });
+
+        var (stream1, stream2) = CreateFullDuplexPair();
+        var client = Hmp1TestHelpers.NewClient(stream2);
+        var (handle, _) = await ConnectPairAsync(adapter, stream1, client);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var stateSyncBytes = await client.ReadOutputAsync(cts.Token);
+        var stateSync = Encoding.UTF8.GetString(stateSyncBytes.Span);
+
+        // None of the DECSETs covered by BuildStateReplaySuffix should fire.
+        Assert.DoesNotContain("\x1b[?1002h", stateSync);
+        Assert.DoesNotContain("\x1b[?1006h", stateSync);
+        Assert.DoesNotContain("\x1b[?1004h", stateSync);
+        Assert.DoesNotContain("\x1b[?2004h", stateSync);
+        Assert.DoesNotContain("\x1b[?25l", stateSync);
+        Assert.DoesNotContain("\x1b[?1h", stateSync);
+        Assert.DoesNotContain("\x1b=", stateSync);
+
+        await handle.DisposeAsync();
+        await client.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task StateReplay_AlternateScreenIsEnteredBeforeCellRepaint()
+    {
+        // When a workload has switched to the alternate screen (TUI like
+        // htop, vim, less), the viewer reconnecting must enter the alt
+        // screen *before* the painter's clear+home, otherwise the snapshot
+        // will paint into the primary buffer and clobber it.
+        await using var adapter = new Hmp1PresentationAdapter(80, 24);
+        using var terminal = new Hex1bTerminal(new Hex1bTerminalOptions
+        {
+            Width = 80,
+            Height = 24,
+            WorkloadAdapter = new NoOpWorkloadAdapter(),
+            PresentationAdapter = adapter
+        });
+
+        terminal.ApplyTokens([new PrivateModeToken(1049, true)]);
+
+        var (stream1, stream2) = CreateFullDuplexPair();
+        var client = Hmp1TestHelpers.NewClient(stream2);
+        var (handle, _) = await ConnectPairAsync(adapter, stream1, client);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var stateSyncBytes = await client.ReadOutputAsync(cts.Token);
+        var stateSync = Encoding.UTF8.GetString(stateSyncBytes.Span);
+
+        var altIndex = stateSync.IndexOf("\x1b[?1049h", StringComparison.Ordinal);
+        var clearIndex = stateSync.IndexOf("\x1b[2J", StringComparison.Ordinal);
+
+        Assert.True(altIndex >= 0, "Alt-screen DECSET 1049h must be emitted when the workload is on the alt screen.");
+        Assert.True(clearIndex > altIndex, "Alt-screen DECSET must come before the clear-screen sequence.");
+
+        await handle.DisposeAsync();
+        await client.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task Hmp1WorkloadAdapter_Disconnected_FiredOnStreamClose()
+    {
+        var (stream1, stream2) = CreateFullDuplexPair();
+
+        await using var server = new Hmp1PresentationAdapter(80, 24);
+        var client = Hmp1TestHelpers.NewClient(stream2);
+        var (handle, _) = await ConnectPairAsync(server, stream1, client);
+
+        var disconnectedTcs = new TaskCompletionSource();
+        client.Disconnected += () => disconnectedTcs.TrySetResult();
+
+        await handle.DisposeAsync();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await disconnectedTcs.Task.WaitAsync(cts.Token);
+
+        await client.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Drives the new ClientHello-first handshake. The producer's <c>AddClient</c>
+    /// blocks reading <see cref="Hmp1FrameType.ClientHello"/> from the client
+    /// stream, and the workload adapter's <c>ConnectAsync</c> writes ClientHello
+    /// then reads Hello + StateSync. They must therefore run concurrently.
+    /// </summary>
+    private static async Task<(Hmp1ClientHandle Handle, Hmp1WorkloadAdapter Client)> ConnectPairAsync(
+        Hmp1PresentationAdapter server,
+        Stream serverSideStream,
+        Hmp1WorkloadAdapter client,
+        CancellationToken ct = default)
+    {
+        var addTask = server.AddClient(serverSideStream, ct);
+        var connectTask = client.ConnectAsync(ct);
+        var handle = await addTask.ConfigureAwait(false);
+        await connectTask.ConfigureAwait(false);
+        return (handle, client);
+    }
+
+    [Fact]
+    public async Task ConnectAsync_ReadPumpSurvivesHandshakeCtTimeout()
+    {
+        // Regression sentinel for the "handshake CT cascades into read-pump" foot-gun
+        // that produced WS-flicker every 5 seconds in the dashboard. The CT supplied
+        // to ConnectAsync must NOT cancel the long-lived read pump after the
+        // handshake completes; only DisposeAsync owns that lifetime.
+        var (stream1, stream2) = CreateFullDuplexPair();
+        await using var server = new Hmp1PresentationAdapter(80, 24);
+        var client = Hmp1TestHelpers.NewClient(stream2);
+
+        using var handshakeCts = new CancellationTokenSource();
+        handshakeCts.CancelAfter(TimeSpan.FromMilliseconds(50));
+
+        var addTask = server.AddClient(stream1, CancellationToken.None);
+        var connectTask = client.ConnectAsync(handshakeCts.Token);
+        var handle = await addTask;
+        await connectTask;
+
+        // Wait long enough for the CT to fire post-handshake.
+        await Task.Delay(200);
+
+        // Pump must still be alive: send some output and verify it arrives.
+        var data = "post-handshake-payload"u8.ToArray();
+        await server.WriteOutputAsync(data);
+
+        using var readCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var received = await client.ReadOutputAsync(readCts.Token);
+        Assert.Equal(data, received.ToArray());
+
+        await handle.DisposeAsync();
+        await client.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Creates a full-duplex stream pair where each side can read and write.
+    /// Stream1 writes → Stream2 reads, and Stream2 writes → Stream1 reads.
+    /// </summary>
+    private static (Stream Stream1, Stream Stream2) CreateFullDuplexPair()
+    {
+        var pipe1To2 = new Pipe();
+        var pipe2To1 = new Pipe();
+
+        var stream1 = new DuplexPipeStream(pipe2To1.Reader.AsStream(), pipe1To2.Writer.AsStream());
+        var stream2 = new DuplexPipeStream(pipe1To2.Reader.AsStream(), pipe2To1.Writer.AsStream());
+
+        return (stream1, stream2);
+    }
+
+    private static (DuplexStreamPair ServerToClient, DuplexStreamPair ClientToServer) CreateDuplexStreamPair()
+    {
+        var s2c = new Pipe();
+        var c2s = new Pipe();
+        return (
+            new DuplexStreamPair(s2c.Reader.AsStream(), s2c.Writer.AsStream()),
+            new DuplexStreamPair(c2s.Reader.AsStream(), c2s.Writer.AsStream()));
+    }
+
+    private sealed record DuplexStreamPair(Stream ReadStream, Stream WriteStream);
+
+    /// <summary>
+    /// A stream that reads from one underlying stream and writes to another,
+    /// creating a bidirectional channel.
+    /// </summary>
+    private sealed class DuplexPipeStream(Stream readStream, Stream writeStream) : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanWrite => true;
+        public override bool CanSeek => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+            => readStream.Read(buffer, offset, count);
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+            => readStream.ReadAsync(buffer, ct);
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct)
+            => readStream.ReadAsync(buffer, offset, count, ct);
+
+        public override void Write(byte[] buffer, int offset, int count)
+            => writeStream.Write(buffer, offset, count);
+
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default)
+            => writeStream.WriteAsync(buffer, ct);
+
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken ct)
+            => writeStream.WriteAsync(buffer, offset, count, ct);
+
+        public override void Flush() => writeStream.Flush();
+
+        public override Task FlushAsync(CancellationToken ct) => writeStream.FlushAsync(ct);
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                readStream.Dispose();
+                writeStream.Dispose();
+            }
+            base.Dispose(disposing);
+        }
+
+        public override async ValueTask DisposeAsync()
+        {
+            await readStream.DisposeAsync();
+            await writeStream.DisposeAsync();
+            await base.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// A workload adapter that does nothing. Lets us construct a Hex1bTerminal
+    /// for unit tests where we drive state directly via ApplyTokens rather
+    /// than feeding bytes through a pump.
+    /// </summary>
+    private sealed class NoOpWorkloadAdapter : IHex1bTerminalWorkloadAdapter
+    {
+        public event Action? Disconnected
+        {
+            add { }
+            remove { }
+        }
+
+        public ValueTask<ReadOnlyMemory<byte>> ReadOutputAsync(CancellationToken ct = default)
+            => ValueTask.FromResult(ReadOnlyMemory<byte>.Empty);
+
+        public ValueTask WriteInputAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
+            => ValueTask.CompletedTask;
+
+        public ValueTask ResizeAsync(int width, int height, CancellationToken ct = default)
+            => ValueTask.CompletedTask;
+
+        public ValueTask DisposeAsync()
+            => ValueTask.CompletedTask;
+    }
+}

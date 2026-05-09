@@ -72,10 +72,36 @@ Build widgets → Reconcile → Measure → Arrange → Render → Wait for inpu
 
 ## 📝 Code Conventions
 
+### Code Analysis Rules
+
+This repo ships a Roslyn analyzer (`src/Hex1b.Analyzers/`) that runs against every project in the solution (lib, samples, tests, benchmarks) but is **not** packaged into the public `Hex1b` NuGet package. It enforces:
+
+| ID         | Rule                                                | Notes |
+|------------|-----------------------------------------------------|-------|
+| HEX1B0001  | Widget extension/instance methods must not start with `With` | `With*` is reserved for `Hex1bTerminalBuilder`. Widgets use `On*` for handlers and bare verb-noun names (`Title("...")`, `MaxFloating(3)`) for configuration. |
+| HEX1B0002  | Types deriving from `Hex1bWidget` must end with `Widget` | |
+| HEX1B0003  | Types deriving from `Hex1bNode` must end with `Node` | |
+| HEX1B0004  | Types deriving from `Hex1bWidget` must be declared as `record` | |
+| HEX1B0005  | Types deriving from `Hex1bNode` must be declared as `class` | |
+| HEX1B0006  | Receiver of widget extension on `WidgetContext<T>` must be named `context` | Flutter-style — keeps the receiver name predictable across every `context.Border(...)`-style call. |
+| HEX1B0007  | Receiver of widget instance extension must be named `widget` | Applies when the receiver is `Hex1bWidget`-derived (or a generic constrained to it). `WidgetContext<T>` receivers are governed by HEX1B0006. |
+| HEX1B0008  | A single widget-builder callback parameter must be named `builder` | "Widget-builder callback" = `Func<…, Hex1bWidget>` (or array / `IEnumerable<>` / derived widget). `On[A-Z]…` event-handler methods are excluded. |
+| HEX1B0009  | A widget extension/instance method should declare at most one widget-builder callback parameter | Multi-builder shapes (e.g. `HSplitter(left, right)`) require explicit `[SuppressMessage("Hex1b.ApiDesign", "HEX1B0009")]`. Same `On*` exclusion as HEX1B0008. |
+
+All nine rules default to `Warning` severity and the lib builds under `TreatWarningsAsErrors=true`. Suppressions exist only where they encode a deliberate API decision (HEX1B0009 on `Splitter`'s two-pane shape).
+
+Tests for the analyzers live in `tests/Hex1b.Analyzers.Tests/`. New rules should follow the existing pattern: implement in `src/Hex1b.Analyzers/`, declare the ID in `Hex1bDiagnosticIds.cs` and `AnalyzerReleases.Unshipped.md`, and add positive + negative tests.
+
 ### Naming
-- Widgets: `*Widget` (e.g., `TextBlockWidget`, `ButtonWidget`)
-- Nodes: `*Node` (e.g., `TextBlockNode`, `ButtonNode`)
+- Widgets: `*Widget` (e.g., `TextBlockWidget`, `ButtonWidget`) — enforced by HEX1B0002/HEX1B0004.
+- Nodes: `*Node` (e.g., `TextBlockNode`, `ButtonNode`) — enforced by HEX1B0003/HEX1B0005.
 - State objects: `*State` (e.g., `TextBoxState`) - for widgets requiring user-owned mutable state
+- Widget configuration methods: never `With*` — that prefix is reserved for `Hex1bTerminalBuilder`. Use `On*` for event handlers and verb-noun for properties (e.g., `Title`, `MaxFloating`, `Disabled`). Enforced by HEX1B0001.
+- Widget extension method parameters (Flutter-style):
+  - `WidgetContext<T>` receiver → `context` (HEX1B0006)
+  - Widget instance receiver (`this XxxWidget …` or `where TWidget : Hex1bWidget`) → `widget` (HEX1B0007)
+  - A single widget-builder callback (`Func<…, Hex1bWidget>` etc.) → `builder` (HEX1B0008)
+  - Avoid having two builder callbacks on one method; if genuinely required, suppress HEX1B0009 with a justification (HEX1B0009)
 
 ### Widget Definition Pattern
 ```csharp
@@ -122,9 +148,9 @@ public static readonly ActionId MyAction = new($"{nameof(MyWidget)}.{nameof(MyAc
 bindings.Key(Hex1bKey.Enter).Triggers(MyWidget.MyAction, handler, "Description");
 ```
 
-Users can then remap/alias/disable actions via `WithInputBindings`:
+Users can then remap/alias/disable actions via `InputBindings`:
 ```csharp
-widget.WithInputBindings(b =>
+widget.InputBindings(b =>
 {
     b.Remove(MyWidget.MyAction);  // remove default key
     b.Key(Hex1bKey.X).Triggers(MyWidget.MyAction);  // rebind to X
