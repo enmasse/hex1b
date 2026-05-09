@@ -1472,12 +1472,6 @@ internal sealed class WindowsConsoleDriver : IConsoleDriver
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool FlushFileBuffers(nint hFile);
     
-    [DllImport("kernel32.dll")]
-    private static extern uint GetConsoleOutputCP();
-    
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool SetConsoleOutputCP(uint wCodePageID);
-    
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool GetConsoleScreenBufferInfo(nint hConsoleOutput, out CONSOLE_SCREEN_BUFFER_INFO lpConsoleScreenBufferInfo);
 
